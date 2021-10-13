@@ -7,14 +7,11 @@ import System.Exit
 import Text.Printf
 import qualified Control.Monad.Fail as F
 
+import Scanner
 import Parser
 import Lexer
 import Compiler
 import Util
-
-data Token = Token
-tokenizeSrc :: String -> Result [Token]
-tokenizeSrc src = undefined
 
 data Expression = Expression
 lexTokens :: [Token] -> Result [Expression] 
@@ -23,14 +20,15 @@ lexTokens tokens = undefined
 compileExpressions :: [Expression] -> Result String
 compileExpressions exprs = undefined
 
-compileFileToNasm :: String -> Result String
-compileFileToNasm src = tokenizeSrc src >>= lexTokens >>= compileExpressions
+generateAstFromTokens = undefined
+
+compileAstToNasm = undefined
 
 main :: IO ()
 main = do
   let basePath = "basic"
-  src <- readFile ("./"++basePath++".ox")
-  case compileFileToNasm src of
+  tokenRes <- tokenizeFile ("./"++basePath++".ox")
+  case tokenRes >>= (compileAstToNasm . generateAstFromTokens) of
     Left  msg -> die msg
     Right asm -> do
       writeFile "basic.asm" asm

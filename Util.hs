@@ -3,11 +3,12 @@ module Util where
 import Text.Printf
 import Numeric.Natural
 
+type UInt = Natural
 type Result a = Either String a
 
 data Location = Location { file :: String
-                         , line :: Natural
-                         , col  :: Natural
+                         , line :: UInt
+                         , col  :: UInt
                          } deriving (Eq, Ord)
 
 instance Show Location where

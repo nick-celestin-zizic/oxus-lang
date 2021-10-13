@@ -1,15 +1,255 @@
 {-# LANGUAGE NamedFieldPuns, TypeSynonymInstances, FlexibleInstances#-}
 module Parser where
 
+import Control.Applicative
+import Control.Monad.State
+import Data.Char
 import Data.Functor.Compose
 import Text.Printf
 
 import qualified Control.Monad.Fail as F
+import qualified Data.Map           as M
+import qualified Data.Set           as S
 
 import Scanner
 import Util
 
 type Parser = Scanner Char Location
+type ParseResult = ScanResult Char Location
+  
 instance F.MonadFail Parser where
   fail msg = Scanner $ \s@ScanState{scanState} ->
-    Compose $ Left (s, printf "%s '%s'" scanState msg)
+    ScanResult $ Left (s, printf "%s '%s'" scanState msg)
+    
+parseString :: Parser a -> String -> String -> ParseResult a
+parseString parser name input = runScanner parser
+                              $ ScanState "" input (Location name 1 1)
+
+parseFile :: Parser a -> String -> IO (ParseResult a)
+parseFile parser path = readFile path >>= return . parseString parser path
+
+debugParser :: Parser a -> String -> a
+debugParser p str = case parseString p "debug" str of
+  ScanResult (Right (_, a))   -> a
+  ScanResult (Left (_, msg)) -> error msg
+  
+-- Constructors
+match :: (Char -> Bool) -> Parser Char
+match p = do
+  ScanState lhs rhs (Location file line col) <- get
+  case rhs of
+    [] -> F.fail "[match] reached end while parsing"
+    (x@'\n'):xs -> if p x then
+                     put (ScanState (lhs++[x]) xs
+                         (Location file (line+1) 1)) >>
+                     return x
+                   else
+                     F.fail "[match] predicate failed"
+    x:xs -> if p x then
+              put (ScanState (lhs++[x]) xs
+                  (Location file line (col+1))) >>
+              return x
+            else
+              F.fail "[match] predicate failed"
+
+matchAny :: Parser Char
+matchAny = match (const True)
+
+matchChar :: Char -> Parser Char
+matchChar = match . (==)
+
+matchString :: String -> Parser String
+matchString = sequenceA . (map matchChar)
+
+matchMany :: (Char -> Bool) -> Parser String
+matchMany = many . match
+
+matchSome :: (Char -> Bool) -> Parser String
+matchSome = some . match
+
+matchFromTo :: String -> String -> Parser String
+matchFromTo from to = (matchString from)
+                   <> (concat <$> many (mapM (match . (/=)) to))
+                   <> (matchString to)
+
+matchMap :: (Ord k, Show k) => M.Map k String -> Parser k
+matchMap map = msum (matchMapKey map <$> M.keys map)
+
+matchMapKey :: (Ord k, Show k) => M.Map k String -> k -> Parser k
+matchMapKey map key = case M.lookup key map of
+  Just value -> matchString value >> return key
+  Nothing    -> F.fail $ printf "[matchMapKey] key '%s' is not a key in the map" (show key)
+
+-- Parser Decorators
+notNull :: Parser [a] -> Parser [a]
+notNull p = do xs <- p
+               if null xs
+                  then F.fail "[notNull] parser returned null"
+                  else return xs
+
+sepBy :: Parser a -> Parser b -> Parser [b]
+sepBy sep element = (:) <$> element <*> many (sep *> element) <|> pure []
+
+eof :: Parser a -> Parser a
+eof p = do x <- p
+           ScanState _ rhs _ <- get
+           if null rhs
+             then return x
+             else F.fail "[eof] reached end of file while parsing"
+
+trim :: Parser a -> Parser a
+trim p = ws *> p <* ws
+
+-- NOTE this name is probably too confusing
+
+-- Parsers
+ws :: Parser String
+ws = matchMany isSpace
+
+pInt :: Parser Int
+pInt = read <$> (matchString "-" <|> matchSome isDigit) <> (matchMany isDigit)
+
+pUInt :: Parser UInt
+pUInt = read <$> matchSome isDigit
+
+pFloat2 :: Parser Float
+pFloat2 = read <$> msum [ matchSome isDigit <> matchString "." <> (matchSome isDigit <|> return "0")
+                       , return "0"        <> matchString "." <> matchSome isDigit
+                       , matchSome isDigit
+                       ]
+
+pFloat :: Parser Float
+pFloat = read <$> undefined
+
+
+pString :: Parser String
+pString = quote *> stringLiteral <* quote
+  where quote = matchChar '"'
+        stringLiteral =  noEscapeQuote <> matchString "\\\"" <> stringLiteral
+                         <|> noEscapeQuote
+        noEscapeQuote = matchMany (\c -> (c /= '"') && (c /= '\\'))
+
+
+-- The Tokenizer
+data Token = Token { location :: Location
+                   , kind :: TokenKind
+                   }
+
+instance Show Token where
+  show Token{kind} = show kind
+
+data TokenKind
+  = Intrinsic Intrinsic
+  | Keyword Keyword
+  | Literal Literal
+  | PrimitiveType PrimitiveType
+  | Symbol Symbol
+  deriving(Show)
+
+data Intrinsic
+  = Inc
+  | Dec
+  | Plus
+  | Minus
+  | Eq
+  deriving(Show, Eq, Enum, Ord)
+
+intrinsicNames :: M.Map Intrinsic String
+intrinsicNames = M.fromList $ [ (Plus,  "+")
+                              , (Minus, "-")
+                              , (Eq,    "==")
+                              , (Inc,   "++")
+                              , (Dec,   "--")
+                              ]
+
+data Keyword
+  = Val
+  | Var
+  | Proc
+  | Let
+  | Func
+  | LeftParen
+  | RightParen
+  | Colon
+  | Equals
+  | LeftCurly
+  | RightCurly
+  | Arrow
+  | Label
+  | Jump
+  deriving(Show, Eq, Enum, Ord)
+
+keywordNames :: M.Map Keyword String
+keywordNames = M.fromList $ [ (Val,        "val")
+                            , (Var,        "var")
+                            , (Let,        "let")
+                            , (LeftParen,  "(")
+                            , (RightParen, ")")
+                            , (Colon,      ":")
+                            , (Equals,     "=")
+                            , (Proc,       "proc")
+                            , (Func,       "func")
+                            , (LeftCurly,  "{")
+                            , (RightCurly, "}")
+                            , (Equals,     "=")
+                            , (Arrow,      "->")
+                            , (Label,      "label")
+                            , (Jump,       "jump")
+                            ]
+
+data Literal
+  = Integer Int
+  | String String
+  deriving(Show, Eq)
+
+data PrimitiveType
+  = Bool
+  | U8
+  | U16
+  | U32
+  | U64
+  -- | Str
+  deriving (Show, Enum, Eq, Ord)
+
+type Symbol = String
+
+tokenizeFile :: String -> IO (Result [Token])
+tokenizeFile path = do
+  src <- readFile path
+  return $ do
+    tokens <- getScanResult $ runScanner pTokens (ScanState "" src (Location path 1 0))
+    -- TODO expand all includes
+    return tokens
+
+pTokens :: Parser [Token]
+pTokens = eof $ (some pToken)
+
+pToken :: Parser Token
+pToken = do
+  ws
+  matchFromTo "//" "\n" <|> (pure "")
+  s <- get
+  token <- (pKeyword <|> pPrimitiveType <|> pIntrinsic <|> pLiteral <|> pIdentifier)
+  ws
+  return $ Token (scanState s) token
+
+pKeyword :: Parser TokenKind
+pKeyword =  Keyword <$> matchMap keywordNames
+
+pPrimitiveType :: Parser TokenKind
+pPrimitiveType = PrimitiveType
+              <$> msum ((\pt -> matchString (show pt) >> return pt)
+              <$> (enumFrom (toEnum 0)))
+
+pIntrinsic :: Parser TokenKind
+pIntrinsic =  Intrinsic <$> matchMap intrinsicNames
+
+pLiteral :: Parser TokenKind
+pLiteral = Literal <$> ((Integer <$> pInt) <|> (String <$> pString))
+
+pIdentifier :: Parser TokenKind
+pIdentifier = Symbol <$> matchSome firstChars <> matchMany (not . (flip S.member illegalChars))
+  where firstChars c = ((not . isUpper) c || (not . isDigit) c) && (not . S.member c) illegalChars
+        illegalChars = S.fromList [ ':', ' ', '.', '\n', '=']
+
+
