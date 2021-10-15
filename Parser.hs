@@ -19,7 +19,7 @@ type ParseResult = ScanResult Char Location
   
 instance F.MonadFail Parser where
   fail msg = Scanner $ \s@ScanState{scanState} ->
-    ScanResult $ Left (s, printf "%s '%s'" scanState msg)
+    ScanResult $ Left (s, printf "%s [PARSER]%s" scanState msg)
     
 parseString :: Parser a -> String -> String -> ParseResult a
 parseString parser name input = runScanner parser
@@ -136,7 +136,7 @@ data Token = Token { location :: Location
                    }
 
 instance Show Token where
-  show Token{kind} = show kind
+  show Token{location, kind} = printf "%s %s" (show location) (show kind)
 
 data TokenKind
   = Intrinsic Intrinsic
@@ -203,12 +203,8 @@ data Literal
   deriving(Show, Eq)
 
 data PrimitiveType
-  = Bool
-  | U8
-  | U16
-  | U32
-  | U64
-  -- | Str
+  = Unit
+  | Int
   deriving (Show, Enum, Eq, Ord)
 
 type Symbol = String
@@ -226,11 +222,11 @@ pTokens = eof $ (some pToken)
 
 pToken :: Parser Token
 pToken = do
-  ws
-  matchFromTo "//" "\n" <|> (pure "")
+  _ <- ws
+  _ <- matchFromTo "//" "\n" <|> (pure "")
   s <- get
   token <- (pKeyword <|> pPrimitiveType <|> pIntrinsic <|> pLiteral <|> pIdentifier)
-  ws
+  _ <- ws
   return $ Token (scanState s) token
 
 pKeyword :: Parser TokenKind
@@ -239,7 +235,7 @@ pKeyword =  Keyword <$> matchMap keywordNames
 pPrimitiveType :: Parser TokenKind
 pPrimitiveType = PrimitiveType
               <$> msum ((\pt -> matchString (show pt) >> return pt)
-              <$> (enumFrom (toEnum 0)))
+              <$> (enumFrom (toEnum 0 :: PrimitiveType)))
 
 pIntrinsic :: Parser TokenKind
 pIntrinsic =  Intrinsic <$> matchMap intrinsicNames

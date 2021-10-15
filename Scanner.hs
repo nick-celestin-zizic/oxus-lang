@@ -18,8 +18,7 @@ newtype ScanResult i s a = ScanResult { _getScanResult :: Either (ScanState i s,
                                       } deriving Functor
 getScanResult :: ScanResult i s a -> Result a
 getScanResult (ScanResult (Left (_, msg))) = Left msg
-getScanResult (ScanResult (Right (_, res))) = Right res
-
+getScanResult (ScanResult (Right (_, a))) = Right a
 newtype Scanner i s a = Scanner { runScanner :: ScanState i s -> ScanResult i s a }
 
 instance Functor (Scanner i s) where
