@@ -1,1 +1,6 @@
 *.old
+*.asm
+*.pdf
+*.o
+*.out
+bin/*

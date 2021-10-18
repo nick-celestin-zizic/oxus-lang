@@ -144,7 +144,7 @@ data TokenKind
   | Literal Literal
   | PrimitiveType PrimitiveType
   | Symbol Symbol
-  deriving(Show)
+  deriving(Show, Eq, Ord)
 
 data Intrinsic
   = Inc
@@ -152,6 +152,7 @@ data Intrinsic
   | Plus
   | Minus
   | Eq
+  | Syscall
   deriving(Show, Eq, Enum, Ord)
 
 intrinsicNames :: M.Map Intrinsic String
@@ -160,6 +161,7 @@ intrinsicNames = M.fromList $ [ (Plus,  "+")
                               , (Eq,    "==")
                               , (Inc,   "++")
                               , (Dec,   "--")
+                              , (Syscall, "syscall")
                               ]
 
 data Keyword
@@ -200,7 +202,7 @@ keywordNames = M.fromList $ [ (Val,        "val")
 data Literal
   = Integer Int
   | String String
-  deriving(Show, Eq)
+  deriving(Show, Eq, Ord)
 
 data PrimitiveType
   = Unit
@@ -225,7 +227,7 @@ pToken = do
   _ <- ws
   _ <- matchFromTo "//" "\n" <|> (pure "")
   s <- get
-  token <- (pKeyword <|> pPrimitiveType <|> pIntrinsic <|> pLiteral <|> pIdentifier)
+  token <- (pKeyword <|> pPrimitiveType <|> pIntrinsic <|> pLiteral <|> pSymbol)
   _ <- ws
   return $ Token (scanState s) token
 
@@ -243,8 +245,8 @@ pIntrinsic =  Intrinsic <$> matchMap intrinsicNames
 pLiteral :: Parser TokenKind
 pLiteral = Literal <$> ((Integer <$> pInt) <|> (String <$> pString))
 
-pIdentifier :: Parser TokenKind
-pIdentifier = Symbol <$> matchSome firstChars <> matchMany (not . (flip S.member illegalChars))
+pSymbol :: Parser TokenKind
+pSymbol = Symbol <$> matchSome firstChars <> matchMany (not . (flip S.member illegalChars))
   where firstChars c = ((not . isUpper) c || (not . isDigit) c) && (not . S.member c) illegalChars
         illegalChars = S.fromList [ ':', ' ', '.', '\n', '=']
 

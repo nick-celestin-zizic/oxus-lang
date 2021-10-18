@@ -3,7 +3,6 @@ module Scanner where
 import Control.Applicative
 import Control.Monad
 import Control.Monad.State
-import Data.Functor.Compose
 import Data.Tuple (swap)
 
 import Util
@@ -13,7 +12,6 @@ data ScanState i s = ScanState { lhs :: [i]
                                , scanState :: s
                                } deriving (Show, Eq)
 
--- NOTE this compose shit might be completely useless
 newtype ScanResult i s a = ScanResult { _getScanResult :: Either (ScanState i s, String) (ScanState i s, a)
                                       } deriving Functor
 getScanResult :: ScanResult i s a -> Result a
