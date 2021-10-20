@@ -49,9 +49,15 @@ exSymbol = getNextToken >>= \Token{kind} -> case kind of
     _ -> F.fail $ printf "Expected token of kind Symbol, but got %s"
                          (show kind)
 
-exIntrinsic :: Lexer Intrinsic
+exIntrinsic :: Lexer (Intrinsic, Int)
 exIntrinsic = getNextToken >>= \Token{kind} -> case kind of
-    Intrinsic name -> return name
+    Intrinsic (int, info) -> case intNumArgs info of
+      Just nargs -> return (int, nargs)
+      Nothing -> do
+        nargs <- exLiteral
+        case nargs of
+          Integer nargs -> return (int, nargs)
+          other -> F.fail "Expected first argument of variadic function to be a number"
     _ -> F.fail $ printf "Expected token of kind Intrinsic, but got %s"
                          (show kind)
 
@@ -69,13 +75,17 @@ exLiteral = getNextToken >>= \Token{kind} -> case kind of
 
 
 type Scope = Maybe ProcDecl
-type SymbolTable = M.Map Symbol Literal
+type SymbolTable = M.Map Symbol ProcExpr
 
 data LexState = LexState { scopes :: M.Map Scope SymbolTable
                          , currentScope :: Maybe ProcDecl
                          } deriving (Show, Eq)
-data Program = Program { entryPoint :: Procedure
-                       }
+
+type Scopes = M.Map Scope SymbolTable
+
+data Program = Program { entryPoint    :: Procedure,
+                         programScopes :: Scopes
+                       } deriving Show
 
 data Procedure = Procedure ProcDecl ProcExpr
   deriving (Show, Eq, Ord)
@@ -84,26 +94,29 @@ data ProcDecl = ProcDecl Symbol PrimitiveType PrimitiveType deriving (Show, Eq, 
 
 data ProcExpr
   = Block [ProcExpr]
-  | Value Literal
-  | Call Intrinsic [ProcExpr]
-  | Declaration Symbol Literal
-  -- | ImmediateValue Literal
+  | ImmediateValue Literal
+  | Call (Intrinsic, Int) [ProcExpr]
+  | Declaration Symbol ProcExpr
+  | Identifier Symbol
   deriving (Show, Eq, Ord)
 
 lexProgram :: Lexer Program
-lexProgram = Program <$> exProc
+lexProgram = do
+  exprs <- lexProc
+  LexState scopes _ <- scanState <$> get
+  return $ Program exprs scopes
 
 
-exProc :: Lexer Procedure
-exProc = do
+lexProc :: Lexer Procedure
+lexProc = do
   declName <- exSymbol
-  exKeyword Colon >> exKeyword Proc
+  exKeyword Colon
   argTypes <- (exPrimitive <|> return Unit)
   retTypes <- ((exKeyword Arrow >> exPrimitive) <|> return Unit)
-  exKeyword Equals
+  exKeyword Colon
   let procDecl = ProcDecl declName argTypes retTypes
   setCurrentScope procDecl
-  procBody <- exProcExpr
+  procBody <- lexProcExpr
   return $ Procedure procDecl procBody
 
 setCurrentScope :: ProcDecl -> Lexer ()
@@ -111,11 +124,11 @@ setCurrentScope decl = do
   ScanState lhs rhs (LexState scopes _) <- get
   put $ ScanState lhs rhs (LexState (M.insert (Just decl) M.empty scopes) (Just decl))
 
-exProcExpr :: Lexer ProcExpr
-exProcExpr = exValue <|> exCall <|> exDecl <|> exBlock
+lexProcExpr :: Lexer ProcExpr
+lexProcExpr = lexBlock <|> lexImmediateValue <|> lexDecl <|> lexBlock <|> lexSymbol <|> lexCall
 
-addConstantToCurrentScope :: Symbol -> Literal -> Lexer ()
-addConstantToCurrentScope name val = do
+addExprToCurrentScope :: Symbol -> ProcExpr -> Lexer ()
+addExprToCurrentScope name val = do
   ScanState lhs rhs (LexState scopes currentScope) <- get
   case M.lookup currentScope scopes of
     Nothing -> put $ ScanState lhs rhs
@@ -123,24 +136,34 @@ addConstantToCurrentScope name val = do
     Just _ -> let newSymbolTable = M.adjust (M.insert name val) currentScope scopes in
       put $ ScanState lhs rhs (LexState newSymbolTable currentScope)
 
-exDecl :: Lexer ProcExpr
-exDecl = do
+lexDecl :: Lexer ProcExpr
+lexDecl = do
   name <- exSymbol
-  exKeyword Colon >> exKeyword Equals
-  value <- exLiteral
-  addConstantToCurrentScope name value
-  return $ Declaration name value
+  exKeyword Colon >> exKeyword Colon
+  expr <- lexProcExpr
+  addExprToCurrentScope name expr
+  return $ Declaration name expr
 
-exValue :: Lexer ProcExpr
-exValue = (Value <$> exLiteral) <|> do
+lexImmediateValue :: Lexer ProcExpr
+lexImmediateValue = (ImmediateValue <$> exLiteral)
+
+lexSymbol :: Lexer ProcExpr
+lexSymbol = do
   sym <- exSymbol
   LexState{scopes, currentScope} <- scanState <$> get
   case M.lookup sym (scopes M.! currentScope) of
-    Just value -> return $ Value value
+    Just _ -> return $ Identifier sym
     Nothing -> F.fail $ printf "symbol '%s' is not defined" sym
 
-exCall :: Lexer ProcExpr
-exCall = Call <$> exIntrinsic <*> some exValue
+lexCall :: Lexer ProcExpr
+lexCall = do
+  pair@(_, nargs) <- exIntrinsic
+  args <- forM [1..nargs] $ \_ -> lexProcExpr
+  return $ Call pair args
+  -- Call <$> exIntrinsic <*> some lexProcExpr
 
-exBlock :: Lexer ProcExpr
-exBlock = Block <$> (exKeyword LeftCurly >> many exProcExpr <* exKeyword RightCurly)
+lexBlock :: Lexer ProcExpr
+lexBlock = Block <$>
+  (exKeyword Proc *> exKeyword LeftCurly *>
+   many lexProcExpr
+   <* exKeyword RightCurly)

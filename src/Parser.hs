@@ -139,7 +139,7 @@ instance Show Token where
   show Token{location, kind} = printf "%s %s" (show location) (show kind)
 
 data TokenKind
-  = Intrinsic Intrinsic
+  = Intrinsic (Intrinsic, IntrinsicInfo)
   | Keyword Keyword
   | Literal Literal
   | PrimitiveType PrimitiveType
@@ -155,14 +155,19 @@ data Intrinsic
   | Syscall
   deriving(Show, Eq, Enum, Ord)
 
-intrinsicNames :: M.Map Intrinsic String
-intrinsicNames = M.fromList $ [ (Plus,  "+")
-                              , (Minus, "-")
-                              , (Eq,    "==")
-                              , (Inc,   "++")
-                              , (Dec,   "--")
-                              , (Syscall, "syscall")
-                              ]
+data IntrinsicInfo = IntrinsicInfo { intName    :: String
+                                   , intNumArgs :: Maybe Int -- Nothing means that we don't know (yet)
+                                   } deriving (Show, Eq, Ord)
+
+intrinsicInfos :: M.Map Intrinsic IntrinsicInfo
+intrinsicInfos = M.fromList $
+  [ (Plus,    IntrinsicInfo "+"  (Just 2))
+  , (Minus,   IntrinsicInfo "-"  (Just 2))
+  , (Eq,      IntrinsicInfo "==" (Just 2))
+  , (Inc,     IntrinsicInfo "++" (Just 1))
+  , (Dec,     IntrinsicInfo "--" (Just 1))
+  , (Syscall, IntrinsicInfo "syscall" Nothing)
+  ]
 
 data Keyword
   = Val
@@ -240,7 +245,7 @@ pPrimitiveType = PrimitiveType
               <$> (enumFrom (toEnum 0 :: PrimitiveType)))
 
 pIntrinsic :: Parser TokenKind
-pIntrinsic =  Intrinsic <$> matchMap intrinsicNames
+pIntrinsic =  matchMap (intName <$> intrinsicInfos) >>= \int -> return $ Intrinsic (int, intrinsicInfos M.! int)
 
 pLiteral :: Parser TokenKind
 pLiteral = Literal <$> ((Integer <$> pInt) <|> (String <$> pString))

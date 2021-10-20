@@ -24,7 +24,7 @@ main = do
   let asmPath = outputPath ++ baseName ++ ".asm"
   let exePath = outputPath ++ baseName
   tokens <- tokenizeFile path
-  case tokens >>= generateProgram >>= compileProgramToNasm of
+  case tokens >>= generateProgram >>= compileProgram of
       Left msg  -> die msg
       Right asm -> do
         writeFile asmPath asm
