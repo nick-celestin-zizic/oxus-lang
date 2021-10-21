@@ -121,14 +121,14 @@ pFloat2 = read <$> msum [ matchSome isDigit <> matchString "." <> (matchSome isD
 pFloat :: Parser Float
 pFloat = read <$> undefined
 
-
 pString :: Parser String
-pString = quote *> stringLiteral <* quote
-  where quote = matchChar '"'
-        stringLiteral =  noEscapeQuote <> matchString "\\\"" <> stringLiteral
-                         <|> noEscapeQuote
-        noEscapeQuote = matchMany (\c -> (c /= '"') && (c /= '\\'))
-
+pString = matchChar '"' *> stringLiteral <* matchChar '"'
+  where
+    stringLiteral = (many noEscape <>
+                     (matchString "\\" <> (return <$> (matchAny))) <>
+                     stringLiteral)
+                    <|> (many noEscape)
+    noEscape = match (\c -> (c /= '"') && (c /= '\\'))
 
 -- The Tokenizer
 data Token = Token { location :: Location
@@ -153,6 +153,7 @@ data Intrinsic
   | Minus
   | Eq
   | Syscall
+  | Len
   deriving(Show, Eq, Enum, Ord)
 
 data IntrinsicInfo = IntrinsicInfo { intName    :: String
@@ -167,6 +168,7 @@ intrinsicInfos = M.fromList $
   , (Inc,     IntrinsicInfo "++" (Just 1))
   , (Dec,     IntrinsicInfo "--" (Just 1))
   , (Syscall, IntrinsicInfo "syscall" Nothing)
+  , (Len,     IntrinsicInfo "len" (Just 1))
   ]
 
 data Keyword
