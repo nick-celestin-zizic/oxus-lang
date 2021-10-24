@@ -18,111 +18,106 @@ type SourceCode = String
 data CompileState = CompileState { src              :: SourceCode
                                  , dataSection      :: SourceCode
                                  , stringsCount     :: Natural
-                                 , scopesInfo       :: M.Map Scope ScopeInfo
-                                 , currentScopeInfo :: ScopeInfo
+                                 , scopeInfo        :: ScopeInfo
                                  } deriving Show
 
 data ScopeInfo = ScopeInfo { rbpOffset  :: Int
                            , symOffsets :: M.Map Symbol Int
-                           , scopeId    :: Scope
-                           , symTable   :: SymbolTable
+                           , symTable   :: Scope
                            } deriving Show
 
-defaultScopeInfo :: M.Map Symbol Int -> Scope -> SymbolTable  -> ScopeInfo
-defaultScopeInfo = ScopeInfo 8
-
-setInfoToScope :: Scope -> Compiler
-setInfoToScope s = do
-  -- TODO make a stack of scopes instead of just deleting the current scope
-  CompileState src bss scount infos _ <- scanState <$> get
-  put $ ScanState [] [] $ CompileState src bss scount infos (infos M.! s)
+defaultScopeInfo :: ScopeInfo
+defaultScopeInfo = ScopeInfo 8 M.empty M.empty
 
 incRbpOffset :: Compiler
 incRbpOffset = do
-  CompileState src bss scount infos (ScopeInfo offset so id st) <- scanState <$> get
-  let newInfo = ScopeInfo (offset + 8) so id st
+  CompileState src dataS scount (ScopeInfo offset so st) <- scanState <$> get
+  let newInfo = ScopeInfo (offset + 8) so st
   put $ ScanState [] [] $
-    CompileState src bss scount (M.insert id newInfo infos) newInfo
+    CompileState src dataS scount newInfo
+
+incStringsCount :: Compiler
+incStringsCount = do
+  CompileState src dataS sc si <- scanState <$> get
+  put $ ScanState [] [] $
+    CompileState src dataS (sc+1) si
 
 recordSymbolOffset :: Symbol -> Compiler
 recordSymbolOffset sym = do
-  CompileState src bss scount infos (ScopeInfo offset so id st) <- scanState <$> get
+  CompileState src dataS scount (ScopeInfo offset so st) <- scanState <$> get
   put $ ScanState [] []  $
-    CompileState src bss scount infos (ScopeInfo offset (M.insert sym offset so) id st)
+    CompileState src dataS scount (ScopeInfo offset (M.insert sym offset so) st)
 
 -- This is definately scuffed but i dont have to write more instances so w/e
 type Compiler = Scanner () CompileState ()
 
 emitf :: (PrintfArg r) => String -> r -> Compiler
 emitf fmt args = do
-  CompileState src bss scount scopes info <- scanState <$> get
-  put $ ScanState [] [] $ CompileState (src ++ (printf fmt args)) bss scount scopes info
+  CompileState src dataS scount info <- scanState <$> get
+  put $ ScanState [] [] $ CompileState (src ++ (printf fmt args)) dataS scount info
 
 emit :: String -> Compiler
 emit add = do
-  CompileState src bss scount scopes info <- scanState <$> get
-  put $ ScanState [] [] $ CompileState (src ++ add) bss scount scopes info
+  CompileState src dataS scount info <- scanState <$> get
+  put $ ScanState [] [] $ CompileState (src ++ add) dataS scount info
 
-emitBss :: String -> Compiler
-emitBss add = do
-  CompileState src bss scount scopes info <- scanState <$> get
-  put $ ScanState [] [] $ CompileState src (bss++add) scount scopes info
+emitDataS :: String -> Compiler
+emitDataS add = do
+  CompileState src dataS scount info <- scanState <$> get
+  put $ ScanState [] [] $ CompileState src (dataS++add) scount info
 
-emitBssf :: (PrintfArg r) => String -> r -> Compiler
-emitBssf fmt args = do
-  CompileState src bss scount scopes info <- scanState <$> get
-  put $ ScanState [] [] $ CompileState src (bss ++ (printf fmt args)) scount scopes info
+emitDataSf :: (PrintfArg r) => String -> r -> Compiler
+emitDataSf fmt = \typ -> do
+  CompileState src dataS scount info <- scanState <$> get
+  put $ ScanState [] [] $
+    CompileState src (dataS ++ (printf fmt typ)) scount info
 
-runCompiler :: Compiler -> Scopes -> Result SourceCode
-runCompiler c vars = src <$>
+runCompiler :: Compiler -> Result SourceCode
+runCompiler c = src <$>
   getScanState (runScanner c (ScanState [] [] $
-                               CompileState "" "" 0
-                               ((defaultScopeInfo M.empty Nothing) <$> vars)
-                               (defaultScopeInfo M.empty Nothing (vars M.! Nothing))
-                             ))
+                               CompileState "" "" 0 defaultScopeInfo))
   
 compileProgram :: Program -> Result SourceCode
-compileProgram (Program (Procedure decl expr) scopes) = flip runCompiler scopes$ do
-  emitBss " ;; Strings\n"
-  emitBss "          section   .data\n"
+compileProgram (Program expr) = runCompiler $ do
+  emitDataS " ;; Strings\n"
+  emitDataS "          section   .data\n"
   emit " ;; Startup\n"
   emit "          global    _start\n"
   emit "          section   .text\n"
-  emit "_start:\n"
-  emit "          push      rbp\n"
-  emit "          mov       rbp, rsp\n"
   emit " ;; Program Start\n"
-  setInfoToScope (Just decl)
+  --error (show expr)
+  --setInfoToScope (Just decl)
   emitExpr expr
-  emit " ;; Program End\n"
-  emit "          mov       rax, 60\n"
-  emit "          mov       rdi, 0\n"
-  emit "          syscall\n"
-  bss <- (dataSection . scanState) <$> get
-  emit bss
+  dataS <- (dataSection . scanState) <$> get
+  emit dataS
 
 emitExpr :: ProcExpr -> Compiler
-emitExpr (Block exprs) = forM_ exprs emitExpr
+emitExpr (Block exprs _) = do
+  CompileState _ _ _ oldScope <- scanState <$> get
+  forM_ exprs emitExpr
+  CompileState src dataS sCount _ <- scanState <$> get
+  put $ ScanState [] [] $ CompileState src dataS sCount oldScope
 emitExpr (ImmediateValue (Integer i)) =
   emitf "          mov       rax, %d\n" i
 emitExpr (ImmediateValue (String s)) = do
   scount <- (stringsCount . scanState) <$> get
-  emitBssf "str_%d:\n" scount
-  emitBssf "          db `%s`\n" s
-  
+  emitDataSf "str_%d:\n" scount
+  emitDataSf "          db `%s`\n" s
   emitf    "          lea       rax, [rel str_%d]\n" scount
-  -- incStringsCount
+  incStringsCount
 emitExpr (Call int args) = case int of
-  (Len, _) -> undefined
+  (Len, _) -> case args of
+    (op:[]) -> do
+      error "Len is not yet implemenented"
+    _ -> error "this should have been typechecked"
   (Plus, _) -> case args of
-    ops@(op1:op2:[]) -> do
+    (op1:op2:[]) -> do
       emit " ;; Plus\n"
-      ScopeInfo offset _ _ symTable <- currentScopeInfo <$> scanState <$> get
       emitExpr op1
       emit "          mov       rdx, rax\n"
       emitExpr op2
       emit "          add       rax, rdx\n"
-    other -> error (show other)
+    _ -> error "this should have been typechecked"
   (Syscall, 2) -> case args of
     (op1:op2:[]) -> do
       emit " ;; Syscall 2\n"
@@ -144,15 +139,40 @@ emitExpr (Call int args) = case int of
       emit "          syscall\n"
     _ -> error "this should have been typechecked"
   other -> error (show other)
+--emitExpr (Declaration "start" (Block exprs x)) =
+  --emitExpr (Declaration "_start" (Block exprs x))
+emitExpr e@(Declaration sym expr@(Block exprs x)) = do
+  emitf "%s:\n" sym
+  emit "          push      rbp\n"
+  emit "          mov       rbp, rsp\n"
+  emitExpr (Block exprs x)
+  emit "          pop      rbp\n"
+  case sym of
+    "_start" -> do
+      emit " ;; Program End\n"
+      emit "          mov       rax, 60\n"
+      emit "          mov       rdi, 0\n"
+      emit "          syscall\n"
+    _ -> emit "          ret\n"
+  CompileState src dataS sCount (ScopeInfo r so st) <- scanState <$> get
+  put $ ScanState [] [] $ CompileState src dataS sCount (ScopeInfo r so (M.insert sym expr st))
 emitExpr (Declaration sym expr) = do
   emitf " ;; Declaration of %s\n" (show sym)
-  emitExpr expr
+  CompileState src dataS sCount (ScopeInfo r so st) <- scanState <$> get
+  put $ ScanState [] [] $ CompileState src dataS sCount (ScopeInfo r so (M.insert sym expr st))
+  -- TODO use this dead code for mutable declarations and make it impossible to make global mutables (for now because its easier)
+  --undefined
+  -- emitExpr expr
   -- TODO redeclaration of mutable variables should use the same offset
-  offset <- rbpOffset <$> currentScopeInfo <$> scanState <$> get
-  recordSymbolOffset sym
-  emitf "          mov       QWORD -%d[rbp], rax\n" offset
-  incRbpOffset
+  --offset <- rbpOffset <$> scopeInfo <$> scanState <$> get
+  --recordSymbolOffset sym
+  -- emitf "          mov       QWORD -%d[rbp], rax\n" offset
+  --incRbpOffset
 emitExpr (Identifier sym) = do
-  offset <- ((M.! sym) . symOffsets . currentScopeInfo . scanState) <$> get
-  emitf "          mov       QWORD rax, -%d[rbp]\n" offset
--- emitExpr expr = error $ show expr
+  expr <- ((M.lookup sym) . symTable . scopeInfo . scanState) <$> get
+  case expr of
+    Nothing -> error $ printf "Symbol `%s` is not defined" sym
+    Just expr -> case expr of
+      Block _ _ -> emitf "          call       %s\n" sym
+      _ -> emitExpr expr
+emitExpr expr = error $ show expr

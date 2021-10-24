@@ -1,10 +1,16 @@
-start :: proc {
-  sys_exit  :: 60
-  sys_write :: 1  
-  
-  msg :: "Hello, World\n"
-  syscall 4 sys_write 1 msg 13
-  
+sys-write :: 1
+std-out   :: 1
+;write :: (sycall 4 sys-write std-out)
 
-  syscall 2 sys_exit 42
+
+test :: proc {
+  msg :: "Hello, World!\n"
+  syscall 4 sys-write std-out msg 14
+}
+
+
+_start :: proc {
+  lazy :: syscall 4 sys-write std-out "Hello, World!!\n" 15
+  test
+  lazy
 }

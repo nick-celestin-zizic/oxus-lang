@@ -1,20 +1,20 @@
 {-# LANGUAGE NamedFieldPuns, TypeSynonymInstances, FlexibleInstances#-}
 module Main where
 import System.FilePath
-import Control.Monad
-import Data.Functor.Compose
-import Numeric.Natural
+-- import Control.Monad
+-- import Data.Functor.Compose
+-- import Numeric.Natural
 import System.Process
 import System.Exit
 import Text.Printf
-import qualified Control.Monad.Fail as F
-import qualified Data.Map           as M
+-- import qualified Control.Monad.Fail as F
+--import qualified Data.Map           as M
 
-import Scanner
+-- import Scanner
 import Parser
 import Lexer
 import Compiler
-import Util
+-- import Util
 
 main :: IO ()
 main = do
@@ -27,9 +27,9 @@ main = do
   case tokens >>= generateProgram >>= compileProgram of
       Left msg  -> die msg
       Right asm -> do
-        writeFile asmPath asm
+        writeFile asmPath asm  
         x <- (runCommand $ printf "nasm -felf64 %s && ld %s.o -o %s && %s"
-                asmPath (outputPath++baseName) exePath exePath) >>=
+               asmPath (outputPath++baseName) exePath exePath) >>=
              waitForProcess
         printf "exit code: %d\n" $ case x of
           ExitSuccess   -> 0

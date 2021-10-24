@@ -95,7 +95,7 @@ eof p = do x <- p
            ScanState _ rhs _ <- get
            if null rhs
              then return x
-             else F.fail "[eof] reached end of file while parsing"
+             else F.fail "[eof] parser not at end of file"
 
 trim :: Parser a -> Parser a
 trim p = ws *> p <* ws
@@ -214,6 +214,7 @@ data Literal
 data PrimitiveType
   = Unit
   | Int
+  | Str
   deriving (Show, Enum, Eq, Ord)
 
 type Symbol = String
@@ -227,15 +228,17 @@ tokenizeFile path = do
     return tokens
 
 pTokens :: Parser [Token]
-pTokens = eof $ (some pToken)
+pTokens = eof $ some pToken
 
+-- TODO comment parsing is still broken, can't have two comments right after eachother
 pToken :: Parser Token
 pToken = do
-  _ <- ws
-  _ <- matchFromTo "//" "\n" <|> (pure "")
+  many (matchFromTo ";" "\n")
+  ws
   s <- get
   token <- (pKeyword <|> pPrimitiveType <|> pIntrinsic <|> pLiteral <|> pSymbol)
-  _ <- ws
+  many (matchFromTo ";" "\n")
+  ws
   return $ Token (scanState s) token
 
 pKeyword :: Parser TokenKind

@@ -19,15 +19,15 @@ instance F.MonadFail Lexer where
 
 endLex :: String -> Lexer a
 endLex msg = do
-  modify $ \ScanState{lhs, scanState} -> ScanState lhs [] scanState
-  F.fail msg
+  formatted <- F.fail msg
+  error formatted
 
 generateProgram :: [Token] -> Result Program
 generateProgram tokens = (getScanResult . runScanner lexProgram)
   (ScanState [] tokens initialLexState)
 
 initialLexState :: LexState
-initialLexState = LexState (M.fromList []) Nothing
+initialLexState = LexState () ()
 
 getNextToken :: Lexer Token
 getNextToken = get >>= \ScanState{lhs, rhs, scanState} ->
@@ -74,18 +74,16 @@ exLiteral = getNextToken >>= \Token{kind} -> case kind of
                          (show kind)
 
 
-type Scope = Maybe ProcDecl
+type Scope = M.Map Symbol ProcExpr -- Maybe ProcDecl
 type SymbolTable = M.Map Symbol ProcExpr
 
-data LexState = LexState { scopes :: M.Map Scope SymbolTable
-                         , currentScope :: Maybe ProcDecl
+data LexState = LexState { scopes :: ()-- M.Map Scope SymbolTable
+                         , currentScope :: () --Maybe ProcDecl
                          } deriving (Show, Eq)
 
 type Scopes = M.Map Scope SymbolTable
 
-data Program = Program { entryPoint    :: Procedure,
-                         programScopes :: Scopes
-                       } deriving Show
+data Program = Program ProcExpr deriving Show
 
 data Procedure = Procedure ProcDecl ProcExpr
   deriving (Show, Eq, Ord)
@@ -93,7 +91,7 @@ data Procedure = Procedure ProcDecl ProcExpr
 data ProcDecl = ProcDecl Symbol PrimitiveType PrimitiveType deriving (Show, Eq, Ord)
 
 data ProcExpr
-  = Block [ProcExpr]
+  = Block [ProcExpr] Scope
   | ImmediateValue Literal
   | Call (Intrinsic, Int) [ProcExpr]
   | Declaration Symbol ProcExpr
@@ -101,12 +99,9 @@ data ProcExpr
   deriving (Show, Eq, Ord)
 
 lexProgram :: Lexer Program
-lexProgram = do
-  exprs <- lexProc
-  LexState scopes _ <- scanState <$> get
-  return $ Program exprs scopes
+lexProgram = (Program . (flip Block M.empty)) <$> (some lexProcExpr)
 
-
+{--
 lexProc :: Lexer Procedure
 lexProc = do
   declName <- exSymbol
@@ -115,18 +110,22 @@ lexProc = do
   retTypes <- ((exKeyword Arrow >> exPrimitive) <|> return Unit)
   exKeyword Colon
   let procDecl = ProcDecl declName argTypes retTypes
-  setCurrentScope procDecl
+  --setCurrentScope procDecl
   procBody <- lexProcExpr
   return $ Procedure procDecl procBody
+--}
 
+{--
 setCurrentScope :: ProcDecl -> Lexer ()
 setCurrentScope decl = do
   ScanState lhs rhs (LexState scopes _) <- get
   put $ ScanState lhs rhs (LexState (M.insert (Just decl) M.empty scopes) (Just decl))
+--}
 
 lexProcExpr :: Lexer ProcExpr
 lexProcExpr = lexBlock <|> lexImmediateValue <|> lexDecl <|> lexBlock <|> lexSymbol <|> lexCall
 
+{--
 addExprToCurrentScope :: Symbol -> ProcExpr -> Lexer ()
 addExprToCurrentScope name val = do
   ScanState lhs rhs (LexState scopes currentScope) <- get
@@ -135,13 +134,13 @@ addExprToCurrentScope name val = do
       (LexState (M.insert currentScope (M.insert name val M.empty) scopes) currentScope)
     Just _ -> let newSymbolTable = M.adjust (M.insert name val) currentScope scopes in
       put $ ScanState lhs rhs (LexState newSymbolTable currentScope)
-
+--}
 lexDecl :: Lexer ProcExpr
 lexDecl = do
   name <- exSymbol
   exKeyword Colon >> exKeyword Colon
   expr <- lexProcExpr
-  addExprToCurrentScope name expr
+  --addExprToCurrentScope name expr
   return $ Declaration name expr
 
 lexImmediateValue :: Lexer ProcExpr
@@ -151,9 +150,11 @@ lexSymbol :: Lexer ProcExpr
 lexSymbol = do
   sym <- exSymbol
   LexState{scopes, currentScope} <- scanState <$> get
+  return $ Identifier sym {--
   case M.lookup sym (scopes M.! currentScope) of
     Just _ -> return $ Identifier sym
     Nothing -> F.fail $ printf "symbol '%s' is not defined" sym
+  --}
 
 lexCall :: Lexer ProcExpr
 lexCall = do
@@ -163,7 +164,6 @@ lexCall = do
   -- Call <$> exIntrinsic <*> some lexProcExpr
 
 lexBlock :: Lexer ProcExpr
-lexBlock = Block <$>
-  (exKeyword Proc *> exKeyword LeftCurly *>
-   many lexProcExpr
-   <* exKeyword RightCurly)
+lexBlock = Block <$> (exKeyword Proc *> exKeyword LeftCurly *>
+                      many lexProcExpr
+                      <* exKeyword RightCurly) <*> return M.empty
