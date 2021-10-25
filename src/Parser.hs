@@ -233,11 +233,13 @@ pTokens = eof $ some pToken
 -- TODO comment parsing is still broken, can't have two comments right after eachother
 pToken :: Parser Token
 pToken = do
-  many (matchFromTo ";" "\n")
+  ws
+  many (ws *> matchFromTo ";" "\n" <* ws)
   ws
   s <- get
   token <- (pKeyword <|> pPrimitiveType <|> pIntrinsic <|> pLiteral <|> pSymbol)
-  many (matchFromTo ";" "\n")
+  ws
+  many (ws *> matchFromTo ";" "\n" <* ws)
   ws
   return $ Token (scanState s) token
 
@@ -258,6 +260,6 @@ pLiteral = Literal <$> ((Integer <$> pInt) <|> (String <$> pString))
 pSymbol :: Parser TokenKind
 pSymbol = Symbol <$> matchSome firstChars <> matchMany (not . (flip S.member illegalChars))
   where firstChars c = ((not . isUpper) c || (not . isDigit) c) && (not . S.member c) illegalChars
-        illegalChars = S.fromList [ ':', ' ', '.', '\n', '=']
+        illegalChars = S.fromList [ ':', ' ', '.', '\n', '=', ';']
 
 
