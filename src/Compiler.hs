@@ -24,15 +24,16 @@ data CompileState = CompileState { src              :: SourceCode
 data ScopeInfo = ScopeInfo { rbpOffset  :: Int
                            , symOffsets :: M.Map Symbol Int
                            , symTable   :: Scope
+                           , scopeDepth :: Natural
                            } deriving Show
 
 defaultScopeInfo :: ScopeInfo
-defaultScopeInfo = ScopeInfo 8 M.empty M.empty
+defaultScopeInfo = ScopeInfo 8 M.empty M.empty 0
 
 incRbpOffset :: Compiler
 incRbpOffset = do
-  CompileState src dataS scount (ScopeInfo offset so st) <- scanState <$> get
-  let newInfo = ScopeInfo (offset + 8) so st
+  CompileState src dataS scount (ScopeInfo offset so st sd) <- scanState <$> get
+  let newInfo = ScopeInfo (offset + 8) so st sd
   put $ ScanState [] [] $
     CompileState src dataS scount newInfo
 
@@ -44,9 +45,9 @@ incStringsCount = do
 
 recordSymbolOffset :: Symbol -> Compiler
 recordSymbolOffset sym = do
-  CompileState src dataS scount (ScopeInfo offset so st) <- scanState <$> get
+  CompileState src dataS scount (ScopeInfo offset so st sd) <- scanState <$> get
   put $ ScanState [] []  $
-    CompileState src dataS scount (ScopeInfo offset (M.insert sym offset so) st)
+    CompileState src dataS scount (ScopeInfo offset (M.insert sym offset so) st sd)
 
 -- This is definately scuffed but i dont have to write more instances so w/e
 type Compiler = Scanner () CompileState ()
@@ -86,14 +87,14 @@ compileProgram (Program expr) = runCompiler $ do
   emit "          section   .text\n"
   emit " ;; Program Start\n"
   --error (show expr)
-  --setInfoToScope (Just decl)
   emitExpr expr
   dataS <- (dataSection . scanState) <$> get
   emit dataS
 
 emitExpr :: ProcExpr -> Compiler
 emitExpr (Block exprs _) = do
-  CompileState _ _ _ oldScope <- scanState <$> get
+  CompileState src dataS sCount oldScope@(ScopeInfo ro so st sd) <- scanState <$> get
+  put $ ScanState [] [] $ CompileState src dataS sCount (ScopeInfo ro so st (sd+1))
   forM_ exprs emitExpr
   CompileState src dataS sCount _ <- scanState <$> get
   put $ ScanState [] [] $ CompileState src dataS sCount oldScope
@@ -102,9 +103,49 @@ emitExpr (ImmediateValue (Integer i)) =
 emitExpr (ImmediateValue (String s)) = do
   scount <- (stringsCount . scanState) <$> get
   emitDataSf "str_%d:\n" scount
-  emitDataSf "          db `%s`\n" s
-  emitf    "          lea       rax, [rel str_%d]\n" scount
+  emitDataSf "          db        `%s`\n" s
+  emitf      "          lea       rax, [rel str_%d]\n" scount
   incStringsCount
+emitExpr (Declaration "start" (Block exprs x)) =
+  emitExpr (Declaration "_start" (Block exprs x))
+emitExpr (Declaration sym expr@(Block exprs x)) = do
+  emitf "%s:\n" sym
+  emit "          push      rbp\n"
+  emit "          mov       rbp, rsp\n"
+  emitExpr (Block exprs x)
+  emit "          pop       rbp\n"
+  case sym of
+    "_start" -> do
+      emit " ;; Program End\n"
+      emit "          mov       rax, 60\n"
+      emit "          mov       rdi, 0\n"
+      emit "          syscall\n"
+    _ -> emit "          ret\n"
+  CompileState src dataS sCount (ScopeInfo r so st sd) <- scanState <$> get
+  put $ ScanState [] [] $ CompileState src dataS sCount (ScopeInfo r so (M.insert sym expr st) sd)
+emitExpr (Declaration sym expr) = do
+  CompileState src dataS sCount (ScopeInfo offset so st sd) <- scanState <$> get
+  emitf " ;; Declaration of %s\n" (show sym)
+  if sd > 1 then do
+    emitExpr expr
+  -- TODO redeclaration of mutable variables should use the same offset
+    --offset <- rbpOffset <$> scopeInfo <$> scanState <$> get
+    recordSymbolOffset sym
+    emitf "          mov       QWORD -%d[rbp], rax\n" offset
+    incRbpOffset
+    else put $ ScanState [] [] $
+      CompileState src dataS sCount (ScopeInfo offset so (M.insert sym expr st) sd)
+emitExpr (Identifier sym) = do
+  expr <- ((M.lookup sym) . symTable . scopeInfo . scanState) <$> get
+  case expr of
+    Nothing -> do
+      offset <- ((M.lookup sym) . symOffsets . scopeInfo . scanState) <$> get
+      case offset of
+        Nothing -> error $ printf "Symbol `%s` is not defined" sym
+        Just offset -> emitf "          mov       rax, -%d[rbp]\n" offset
+    Just expr -> case expr of
+      Block _ _ -> emitf "          call      %s\n" sym
+      _ -> emitExpr expr
 emitExpr (Call int args) = case int of
   (Len, _) -> case args of
     (op:[]) -> do
@@ -139,40 +180,4 @@ emitExpr (Call int args) = case int of
       emit "          syscall\n"
     _ -> error "this should have been typechecked"
   other -> error (show other)
---emitExpr (Declaration "start" (Block exprs x)) =
-  --emitExpr (Declaration "_start" (Block exprs x))
-emitExpr e@(Declaration sym expr@(Block exprs x)) = do
-  emitf "%s:\n" sym
-  emit "          push      rbp\n"
-  emit "          mov       rbp, rsp\n"
-  emitExpr (Block exprs x)
-  emit "          pop      rbp\n"
-  case sym of
-    "_start" -> do
-      emit " ;; Program End\n"
-      emit "          mov       rax, 60\n"
-      emit "          mov       rdi, 0\n"
-      emit "          syscall\n"
-    _ -> emit "          ret\n"
-  CompileState src dataS sCount (ScopeInfo r so st) <- scanState <$> get
-  put $ ScanState [] [] $ CompileState src dataS sCount (ScopeInfo r so (M.insert sym expr st))
-emitExpr (Declaration sym expr) = do
-  emitf " ;; Declaration of %s\n" (show sym)
-  CompileState src dataS sCount (ScopeInfo r so st) <- scanState <$> get
-  put $ ScanState [] [] $ CompileState src dataS sCount (ScopeInfo r so (M.insert sym expr st))
-  -- TODO use this dead code for mutable declarations and make it impossible to make global mutables (for now because its easier)
-  --undefined
-  -- emitExpr expr
-  -- TODO redeclaration of mutable variables should use the same offset
-  --offset <- rbpOffset <$> scopeInfo <$> scanState <$> get
-  --recordSymbolOffset sym
-  -- emitf "          mov       QWORD -%d[rbp], rax\n" offset
-  --incRbpOffset
-emitExpr (Identifier sym) = do
-  expr <- ((M.lookup sym) . symTable . scopeInfo . scanState) <$> get
-  case expr of
-    Nothing -> error $ printf "Symbol `%s` is not defined" sym
-    Just expr -> case expr of
-      Block _ _ -> emitf "          call       %s\n" sym
-      _ -> emitExpr expr
-emitExpr expr = error $ show expr
+-- emitExpr expr = error $ show expr

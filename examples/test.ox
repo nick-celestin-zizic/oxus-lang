@@ -9,8 +9,7 @@ test :: proc {
 }
 
 
-_start :: proc {
-  lazy :: syscall 4 sys-write std-out "Hello, World!!\n" 15
+start :: proc {
+  syscall 4 sys-write std-out "Hello, World!!\n" 15
   test
-  lazy
 }
