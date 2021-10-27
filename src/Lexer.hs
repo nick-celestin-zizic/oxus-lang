@@ -91,56 +91,26 @@ data Procedure = Procedure ProcDecl ProcExpr
 data ProcDecl = ProcDecl Symbol PrimitiveType PrimitiveType deriving (Show, Eq, Ord)
 
 data ProcExpr
-  = Block [ProcExpr] Scope
+  = Block [ProcExpr]
   | ImmediateValue Literal
   | Call (Intrinsic, Int) [ProcExpr]
   | Declaration Symbol ProcExpr
   | Identifier Symbol
+  | IfExpr ProcExpr ProcExpr
   deriving (Show, Eq, Ord)
 
 lexProgram :: Lexer Program
-lexProgram = (Program . (flip Block M.empty)) <$> (some lexProcExpr)
-
-{--
-lexProc :: Lexer Procedure
-lexProc = do
-  declName <- exSymbol
-  exKeyword Colon
-  argTypes <- (exPrimitive <|> return Unit)
-  retTypes <- ((exKeyword Arrow >> exPrimitive) <|> return Unit)
-  exKeyword Colon
-  let procDecl = ProcDecl declName argTypes retTypes
-  --setCurrentScope procDecl
-  procBody <- lexProcExpr
-  return $ Procedure procDecl procBody
---}
-
-{--
-setCurrentScope :: ProcDecl -> Lexer ()
-setCurrentScope decl = do
-  ScanState lhs rhs (LexState scopes _) <- get
-  put $ ScanState lhs rhs (LexState (M.insert (Just decl) M.empty scopes) (Just decl))
---}
+lexProgram = (Program . Block) <$> (some lexProcExpr)
 
 lexProcExpr :: Lexer ProcExpr
-lexProcExpr = lexBlock <|> lexImmediateValue <|> lexDecl <|> lexBlock <|> lexSymbol <|> lexCall
+lexProcExpr = lexBlock <|> lexImmediateValue <|> lexDecl <|> lexBlock <|> lexSymbol <|> lexCall <|> lexIf
 
-{--
-addExprToCurrentScope :: Symbol -> ProcExpr -> Lexer ()
-addExprToCurrentScope name val = do
-  ScanState lhs rhs (LexState scopes currentScope) <- get
-  case M.lookup currentScope scopes of
-    Nothing -> put $ ScanState lhs rhs
-      (LexState (M.insert currentScope (M.insert name val M.empty) scopes) currentScope)
-    Just _ -> let newSymbolTable = M.adjust (M.insert name val) currentScope scopes in
-      put $ ScanState lhs rhs (LexState newSymbolTable currentScope)
---}
+
 lexDecl :: Lexer ProcExpr
 lexDecl = do
   name <- exSymbol
   exKeyword Colon >> exKeyword Colon
   expr <- lexProcExpr
-  --addExprToCurrentScope name expr
   return $ Declaration name expr
 
 lexImmediateValue :: Lexer ProcExpr
@@ -163,7 +133,12 @@ lexCall = do
   return $ Call pair args
   -- Call <$> exIntrinsic <*> some lexProcExpr
 
+lexIf :: Lexer ProcExpr
+lexIf = IfExpr <$>
+  (exKeyword If *> lexProcExpr) <*>
+  (Block <$> (exKeyword LeftCurly *> (some lexProcExpr) <* exKeyword RightCurly))
+
 lexBlock :: Lexer ProcExpr
 lexBlock = Block <$> (exKeyword Proc *> exKeyword LeftCurly *>
                       many lexProcExpr
-                      <* exKeyword RightCurly) <*> return M.empty
+                      <* exKeyword RightCurly)

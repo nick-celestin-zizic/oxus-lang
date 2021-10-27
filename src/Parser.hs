@@ -154,6 +154,7 @@ data Intrinsic
   | Eq
   | Syscall
   | Len
+  | Greater
   deriving(Show, Eq, Enum, Ord)
 
 data IntrinsicInfo = IntrinsicInfo { intName    :: String
@@ -167,6 +168,7 @@ intrinsicInfos = M.fromList $
   , (Eq,      IntrinsicInfo "==" (Just 2))
   , (Inc,     IntrinsicInfo "++" (Just 1))
   , (Dec,     IntrinsicInfo "--" (Just 1))
+  , (Greater, IntrinsicInfo ">"  (Just 2))
   , (Syscall, IntrinsicInfo "syscall" Nothing)
   , (Len,     IntrinsicInfo "len" (Just 1))
   ]
@@ -186,26 +188,29 @@ data Keyword
   | Arrow
   | Label
   | Jump
+  | If
   deriving(Show, Eq, Enum, Ord)
 
 keywordNames :: M.Map Keyword String
-keywordNames = M.fromList $ [ (Val,        "val")
-                            , (Var,        "var")
-                            , (Let,        "let")
-                            , (LeftParen,  "(")
-                            , (RightParen, ")")
-                            , (Colon,      ":")
-                            , (Equals,     "=")
-                            , (Proc,       "proc")
-                            , (Func,       "func")
-                            , (LeftCurly,  "{")
-                            , (RightCurly, "}")
-                            , (Equals,     "=")
-                            , (Arrow,      "->")
-                            , (Label,      "label")
-                            , (Jump,       "jump")
-                            ]
-
+keywordNames = M.fromList $
+  [ (Val,        "val")
+  , (Var,        "var")
+  , (Let,        "let")
+  , (LeftParen,  "(")
+  , (RightParen, ")")
+  , (Colon,      ":")
+  , (Equals,     "=")
+  , (Proc,       "proc")
+  , (Func,       "func")
+  , (LeftCurly,  "{")
+  , (RightCurly, "}")
+  , (Equals,     "=")
+  , (Arrow,      "->")
+  , (Label,      "label")
+  , (Jump,       "jump")
+  , (If,         "if")
+  ]
+  
 data Literal
   = Integer Int
   | String String
