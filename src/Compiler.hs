@@ -18,6 +18,7 @@ type SourceCode = String
 data CompileState = CompileState { src              :: SourceCode
                                  , dataSection      :: SourceCode
                                  , stringsCount     :: Natural
+                                 , stackBytesForProc :: Int
                                  , scopeInfo        :: ScopeInfo
                                  } deriving Show
 
@@ -32,51 +33,51 @@ defaultScopeInfo = ScopeInfo 8 M.empty M.empty 0
 
 incRbpOffset :: Compiler ()
 incRbpOffset = do
-  CompileState src dataS scount (ScopeInfo offset so st sd) <- scanState <$> get
+  CompileState src dataS scount sbytes (ScopeInfo offset so st sd) <- scanState <$> get
   let newInfo = ScopeInfo (offset + 8) so st sd
   put $ ScanState [] [] $
-    CompileState src dataS scount newInfo
+    CompileState src dataS scount sbytes newInfo
 
 incStringsCount :: Compiler ()
 incStringsCount = do
-  CompileState src dataS sc si <- scanState <$> get
+  CompileState src dataS sc sb si <- scanState <$> get
   put $ ScanState [] [] $
-    CompileState src dataS (sc+1) si
+    CompileState src dataS (sc+1) sb si
 
 recordSymbolOffset :: Symbol -> Compiler ()
 recordSymbolOffset sym = do
-  CompileState src dataS scount (ScopeInfo offset so st sd) <- scanState <$> get
+  CompileState src dataS scount sbytes (ScopeInfo offset so st sd) <- scanState <$> get
   put $ ScanState [] []  $
-    CompileState src dataS scount (ScopeInfo offset (M.insert sym offset so) st sd)
+    CompileState src dataS scount sbytes (ScopeInfo offset (M.insert sym offset so) st sd)
 
 -- This is definately scuffed but i dont have to write more instances so w/e
 type Compiler = Scanner () CompileState
 
 emitf :: (PrintfArg r) => String -> r -> Compiler ()
 emitf fmt args = do
-  CompileState src dataS scount info <- scanState <$> get
-  put $ ScanState [] [] $ CompileState (src ++ (printf fmt args)) dataS scount info
+  CompileState src dataS scount sbytes info <- scanState <$> get
+  put $ ScanState [] [] $ CompileState (src ++ (printf fmt args)) dataS scount sbytes info
 
 emit :: String -> Compiler ()
 emit add = do
-  CompileState src dataS scount info <- scanState <$> get
-  put $ ScanState [] [] $ CompileState (src ++ add) dataS scount info
+  CompileState src dataS scount sbytes info <- scanState <$> get
+  put $ ScanState [] [] $ CompileState (src ++ add) dataS scount sbytes info
 
 emitDataS :: String -> Compiler ()
 emitDataS add = do
-  CompileState src dataS scount info <- scanState <$> get
-  put $ ScanState [] [] $ CompileState src (dataS++add) scount info
+  CompileState src dataS scount sbytes info <- scanState <$> get
+  put $ ScanState [] [] $ CompileState src (dataS++add) scount sbytes info
 
 emitDataSf :: (PrintfArg r) => String -> r -> Compiler ()
 emitDataSf fmt = \typ -> do
-  CompileState src dataS scount info <- scanState <$> get
+  CompileState src dataS scount sbytes info <- scanState <$> get
   put $ ScanState [] [] $
-    CompileState src (dataS ++ (printf fmt typ)) scount info
+    CompileState src (dataS ++ (printf fmt typ)) scount sbytes info
 
 runCompiler :: Compiler () -> Result SourceCode
 runCompiler c = src <$>
   getScanState (runScanner c (ScanState [] [] $
-                               CompileState "" "" 0 defaultScopeInfo))
+                               CompileState "" "" 0 0 defaultScopeInfo))
   
 compileProgram :: Program -> Result SourceCode
 compileProgram (Program expr) = runCompiler $ do
@@ -95,11 +96,11 @@ compileProgram (Program expr) = runCompiler $ do
 
 emitExpr :: ProcExpr -> Compiler ()
 emitExpr (Block exprs) = do
-  CompileState src dataS sCount oldScope@(ScopeInfo ro so st sd) <- scanState <$> get
-  put $ ScanState [] [] $ CompileState src dataS sCount (ScopeInfo ro so st (sd+1))
+  CompileState src dataS sCount sb oldScope@(ScopeInfo ro so st sd) <- scanState <$> get
+  put $ ScanState [] [] $ CompileState src dataS sCount sb (ScopeInfo ro so st (sd+1))
   forM_ exprs emitExpr
-  CompileState src dataS sCount _ <- scanState <$> get
-  put $ ScanState [] [] $ CompileState src dataS sCount oldScope
+  CompileState src dataS sCount _ (ScopeInfo offset _ _ _) <- scanState <$> get
+  put $ ScanState [] [] $ CompileState src dataS sCount (offset-8) oldScope
 emitExpr (ImmediateValue (Integer i)) =
   emitf "          mov       rax, %d\n" i
 emitExpr (ImmediateValue (String s)) = do
@@ -112,14 +113,15 @@ emitExpr (Declaration "start" expr) = do
   emit "_start:\n"
   emit "          push      rbp\n"
   emit "          mov       rbp, rsp\n"
-  shitToAdd <- do
+  (shitToAdd, offset) <- do
     oldSrc <- (src . scanState) <$> get
     let oldLen = length oldSrc
     emitExpr expr
-    CompileState newSrc ds so si <- scanState <$> get
-    put $ ScanState [] [] $ CompileState oldSrc ds so si
-    return $ drop oldLen newSrc
-  offset <- (rbpOffset . scopeInfo . scanState) <$> get
+    CompileState newSrc ds so offset si <- scanState <$> get
+    put $ ScanState [] [] $ CompileState oldSrc ds so offset si
+    --error (show offset)
+    return (drop oldLen newSrc, offset)
+  --offset <- (rbpOffset . scopeInfo . scanState) <$> get
   emitf "          sub       rsp, %d\n" offset
   emit shitToAdd
   --emitExpr expr
@@ -139,20 +141,21 @@ emitExpr (Declaration sym expr@(Block _)) = do
   --emit "          leave\n"
   emit "          pop       rbp\n"
   emit "          ret\n"
-  CompileState src dataS sCount (ScopeInfo r so st sd) <- scanState <$> get
-  put $ ScanState [] [] $ CompileState src dataS sCount (ScopeInfo r so (M.insert sym expr st) sd)
+  CompileState src dataS sCount sb (ScopeInfo r so st sd) <- scanState <$> get
+  put $ ScanState [] [] $ CompileState src dataS sCount sb (ScopeInfo r so (M.insert sym expr st) sd)
 emitExpr (Declaration sym expr) = do
-  CompileState src dataS sCount (ScopeInfo offset so st sd) <- scanState <$> get
+  CompileState src dataS sCount sb (ScopeInfo offset so st sd) <- scanState <$> get
   emitf " ;; Declaration of %s\n" (show sym)
-  if sd > 1 then do
-    emitExpr expr
-  -- TODO redeclaration of mutable variables should use the same offset
-    --offset <- rbpOffset <$> scopeInfo <$> scanState <$> get
-    recordSymbolOffset sym
-    emitf "          mov       QWORD [rbp-%d], rax\n" offset
-    incRbpOffset
+  if sd > 1
+    then do
+      emitExpr expr
+      -- TODO redeclaration of mutable variables should use the same offset
+      --offset <- rbpOffset <$> scopeInfo <$> scanState <$> get
+      recordSymbolOffset sym
+      emitf "          mov       QWORD [rbp-%d], rax\n" offset
+      incRbpOffset
     else put $ ScanState [] [] $
-      CompileState src dataS sCount (ScopeInfo offset so (M.insert sym expr st) sd)
+      CompileState src dataS sCount sb (ScopeInfo offset so (M.insert sym expr st) sd)
 emitExpr (Identifier sym) = do
   expr <- ((M.lookup sym) . symTable . scopeInfo . scanState) <$> get
   case expr of
