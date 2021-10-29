@@ -127,11 +127,14 @@ lexSymbol = do
   --}
 
 lexCall :: Lexer ProcExpr
-lexCall = do
-  pair@(_, nargs) <- exIntrinsic
-  args <- forM [1..nargs] $ \_ -> lexProcExpr
-  return $ Call pair args
-  -- Call <$> exIntrinsic <*> some lexProcExpr
+lexCall = lexIntCall -- <|> lexProcCall
+  where
+    lexIntCall = do
+      pair@(_, nargs) <- exIntrinsic
+      args <- replicateM nargs lexProcExpr
+      return $ Call pair args
+    lexProcCall = do
+      undefined
 
 lexIf :: Lexer ProcExpr
 lexIf = IfExpr <$>

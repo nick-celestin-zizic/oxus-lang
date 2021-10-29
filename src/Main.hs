@@ -8,7 +8,7 @@ import System.Process
 import System.Exit
 import Text.Printf
 -- import qualified Control.Monad.Fail as F
---import qualified Data.Map           as M
+import qualified Data.Text           as T
 
 -- import Scanner
 import Parser
@@ -27,7 +27,7 @@ main = do
   case tokens >>= generateProgram >>= compileProgram of
       Left msg  -> die msg
       Right asm -> do
-        writeFile asmPath asm  
+        writeFile asmPath (T.unpack asm)
         x <- (runCommand $ printf "nasm -felf64 %s && ld %s.o -o %s && %s"
                asmPath (outputPath++baseName) exePath exePath) >>=
              waitForProcess
