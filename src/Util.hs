@@ -16,3 +16,6 @@ instance Show Location where
 
 instance PrintfArg Location where
   formatArg = const . showString . show
+
+dump :: (Show s) => s -> a
+dump = error . show

@@ -27,7 +27,7 @@ generateProgram tokens = (getScanResult . runScanner lexProgram)
   (ScanState [] tokens initialLexState)
 
 initialLexState :: LexState
-initialLexState = LexState () ()
+initialLexState = LexState M.empty
 
 getNextToken :: Lexer Token
 getNextToken = get >>= \ScanState{lhs, rhs, scanState} ->
@@ -53,19 +53,29 @@ exIntrinsic :: Lexer (Intrinsic, Int)
 exIntrinsic = getNextToken >>= \Token{kind} -> case kind of
     Intrinsic (int, info) -> case intNumArgs info of
       Just nargs -> return (int, nargs)
-      Nothing -> do
-        nargs <- exLiteral
-        case nargs of
-          Integer nargs -> return (int, nargs)
-          other -> F.fail "Expected first argument of variadic function to be a number"
-    _ -> F.fail $ printf "Expected token of kind Intrinsic, but got %s"
-                         (show kind)
+      Nothing -> exLiteral >>= \n -> case n of
+        Integer nargs -> return (int, nargs)
+        other -> F.fail $ printf "Expected first argument of variadic function to be a number but got %s" (show other)
+    _ -> F.fail $ printf "Expected token of kind Intrinsic, but got %s" (show kind)
 
-exPrimitive :: Lexer PrimitiveType
-exPrimitive = getNextToken >>= \Token{kind} -> case kind of
-    PrimitiveType name -> return name
-    _ -> F.fail $ printf "Expected token of kind Symbol, but got %s"
-                         (show kind)
+exType :: Lexer Type
+exType = (Primitive <$> exPrimitiveType) <|> (Compound <$> exCompoundType)
+  where
+    exPrimitiveType = getNextToken >>= \Token{kind} -> case kind of
+      Parser.PrimitiveType name -> return name
+      _ -> F.fail $ printf "Expected token of kind Symbol, but got %s" (show kind)
+    exCompoundType = do
+      exKeyword Proc
+      args <- many exIdentifier
+      ret  <- Primitive <$> ((exKeyword Arrow *> exPrimitiveType) <|> (return Unit))
+      return $ Procedure args ret
+
+exIdentifier :: Lexer Identifier
+exIdentifier = do
+  name <- exSymbol
+  exKeyword Colon
+  typ <- exType
+  return (name, typ)
 
 exLiteral :: Lexer Literal
 exLiteral = getNextToken >>= \Token{kind} -> case kind of
@@ -73,75 +83,114 @@ exLiteral = getNextToken >>= \Token{kind} -> case kind of
     _ -> F.fail $ printf "Expected token of kind Literal, but got %s"
                          (show kind)
 
-
-type Scope = M.Map Symbol ProcExpr -- Maybe ProcDecl
+type Scope = M.Map Identifier ProcExpr -- Maybe ProcDecl
 type SymbolTable = M.Map Symbol ProcExpr
 
-data LexState = LexState { scopes :: ()-- M.Map Scope SymbolTable
-                         , currentScope :: () --Maybe ProcDecl
+--data ProcInfo = 
+data LexState = LexState { procs :: M.Map Symbol CallInfo
                          } deriving (Show, Eq)
 
-type Scopes = M.Map Scope SymbolTable
+--type Scopes = M.Map Scope SymbolTable
 
-data Program = Program ProcExpr deriving Show
+data Program = Program [ProcExpr] deriving Show
 
-data Procedure = Procedure ProcDecl ProcExpr
+data CallInfo
+  = IntrinsicCall Intrinsic Int
+  | DefinedCall   Symbol    Int
   deriving (Show, Eq, Ord)
 
-data ProcDecl = ProcDecl Symbol PrimitiveType PrimitiveType deriving (Show, Eq, Ord)
+type Identifier = (Symbol, Type)
+
+data Type
+  = Primitive PrimitiveType
+  | Compound  CompoundType
+  deriving (Show, Eq, Ord)
+
+data CompoundType
+  = Procedure [Identifier] Type
+  deriving (Show, Eq, Ord)
 
 data ProcExpr
-  = Block [ProcExpr]
+  = Block          [ProcExpr]
   | ImmediateValue Literal
-  | Call (Intrinsic, Int) [ProcExpr]
-  | Declaration Symbol ProcExpr
-  | Identifier Symbol
-  | IfExpr ProcExpr ProcExpr
+  | Declaration    Identifier ProcExpr
+  | Call           CallInfo   [ProcExpr]
+  | Identifier     Identifier
+  | Name           Symbol
+  | IfExpr         ProcExpr   ProcExpr
+  | Return
   deriving (Show, Eq, Ord)
 
 lexProgram :: Lexer Program
-lexProgram = (Program . Block) <$> (some lexProcExpr)
+lexProgram = Program <$> (some lexProcExpr)
 
 lexProcExpr :: Lexer ProcExpr
-lexProcExpr = lexBlock <|> lexImmediateValue <|> lexDecl <|> lexBlock <|> lexSymbol <|> lexCall <|> lexIf
+lexProcExpr
+   =  lexImmediateValue
+  <|> lexReturn    
+  <|> lexDecl
+  <|> lexCall
+  <|> lexIf
+  <|> lexBlock
+  <|> lexIdentifier
+  <|> lexName
+  <|> F.fail "could not lex"
 
+
+lexReturn :: Lexer ProcExpr
+lexReturn = exKeyword Ret >> return Return
 
 lexDecl :: Lexer ProcExpr
 lexDecl = do
-  name <- exSymbol
-  exKeyword Colon >> exKeyword Colon
-  expr <- lexProcExpr
-  return $ Declaration name expr
+  name <- exKeyword Val   *> exSymbol
+  typ  <- exKeyword Colon *> exType
+  case typ of
+    Primitive _ -> do
+      exKeyword Equals
+      val <- lexImmediateValue
+      return $ Declaration (name, typ) val
+    Compound p@(Procedure args ret) -> do
+      ScanState a b (LexState procs) <- get
+      put $ ScanState a b
+        (LexState (M.insert name (DefinedCall name (length args)) procs) )
+      expr <- (exKeyword Equals *> lexProcExpr) <|> lexBlock
+      return $ Declaration (name, typ) expr
 
 lexImmediateValue :: Lexer ProcExpr
 lexImmediateValue = (ImmediateValue <$> exLiteral)
 
-lexSymbol :: Lexer ProcExpr
-lexSymbol = do
+lexIdentifier :: Lexer ProcExpr
+lexIdentifier = do
   sym <- exSymbol
-  LexState{scopes, currentScope} <- scanState <$> get
-  return $ Identifier sym {--
+  typ <- exKeyword Colon *> exType
+  return $ Identifier (sym, typ) {--
   case M.lookup sym (scopes M.! currentScope) of
     Just _ -> return $ Identifier sym
     Nothing -> F.fail $ printf "symbol '%s' is not defined" sym
   --}
 
+lexName :: Lexer ProcExpr
+lexName = Name <$> exSymbol
+
 lexCall :: Lexer ProcExpr
-lexCall = lexIntCall -- <|> lexProcCall
+lexCall = lexIntCall <|> lexProcCall
   where
     lexIntCall = do
-      pair@(_, nargs) <- exIntrinsic
+      int@(name, nargs) <- exIntrinsic
       args <- replicateM nargs lexProcExpr
-      return $ Call pair args
+      return $ Call (IntrinsicCall name nargs) args
     lexProcCall = do
-      undefined
+      name <- exSymbol
+      procs <- (procs . scanState) <$> get
+      case M.lookup name procs of
+        Nothing -> F.fail $ printf "`%s` is not a defined procedure" name
+        Just (DefinedCall _ nargs) -> do
+          args <- replicateM nargs lexProcExpr
+          return $ Call (DefinedCall name nargs) args
 
 lexIf :: Lexer ProcExpr
 lexIf = IfExpr <$>
-  (exKeyword If *> lexProcExpr) <*>
-  (Block <$> (exKeyword LeftCurly *> (some lexProcExpr) <* exKeyword RightCurly))
+  (exKeyword If *> lexProcExpr) <*> lexProcExpr
 
 lexBlock :: Lexer ProcExpr
-lexBlock = Block <$> (exKeyword Proc *> exKeyword LeftCurly *>
-                      many lexProcExpr
-                      <* exKeyword RightCurly)
+lexBlock = Block <$> (exKeyword LeftCurly *> (many lexProcExpr) <* exKeyword RightCurly)

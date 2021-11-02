@@ -138,6 +138,8 @@ data Token = Token { location :: Location
 instance Show Token where
   show Token{location, kind} = printf "%s %s" (show location) (show kind)
 
+
+
 data TokenKind
   = Intrinsic (Intrinsic, IntrinsicInfo)
   | Keyword Keyword
@@ -155,6 +157,7 @@ data Intrinsic
   | Syscall
   | Len
   | Greater
+  | Less
   deriving(Show, Eq, Enum, Ord)
 
 data IntrinsicInfo = IntrinsicInfo { intName    :: String
@@ -169,58 +172,60 @@ intrinsicInfos = M.fromList $
   , (Inc,     IntrinsicInfo "++" (Just 1))
   , (Dec,     IntrinsicInfo "--" (Just 1))
   , (Greater, IntrinsicInfo ">"  (Just 2))
+  , (Less,    IntrinsicInfo "<"  (Just 2))
   , (Syscall, IntrinsicInfo "syscall" Nothing)
   , (Len,     IntrinsicInfo "len" (Just 1))
   ]
 
 data Keyword
-  = Val
-  | Var
+  = Var
+  | Val
   | Proc
-  | Let
   | Func
+  | Macro
   | LeftParen
   | RightParen
   | Colon
   | Equals
   | LeftCurly
   | RightCurly
-  | Arrow
   | Label
   | Jump
   | If
+  | Arrow
+  | Ret
   deriving(Show, Eq, Enum, Ord)
 
 keywordNames :: M.Map Keyword String
 keywordNames = M.fromList $
   [ (Val,        "val")
   , (Var,        "var")
-  , (Let,        "let")
   , (LeftParen,  "(")
   , (RightParen, ")")
+  , (LeftCurly,  "{")
+  , (RightCurly, "}")
   , (Colon,      ":")
   , (Equals,     "=")
   , (Proc,       "proc")
   , (Func,       "func")
-  , (LeftCurly,  "{")
-  , (RightCurly, "}")
-  , (Equals,     "=")
-  , (Arrow,      "->")
+  , (Macro,      "macro")
   , (Label,      "label")
   , (Jump,       "jump")
   , (If,         "if")
+  , (Arrow,      "->")
+  , (Ret,        "return")
   ]
   
 data Literal
   = Integer Int
-  | String String
+  | Str     String
   deriving(Show, Eq, Ord)
 
 data PrimitiveType
   = Unit
-  | Int
-  | Str
-  deriving (Show, Enum, Eq, Ord)
+  | I64
+  | String
+  deriving (Show, Eq, Ord, Enum)
 
 type Symbol = String
 
@@ -253,14 +258,15 @@ pKeyword =  Keyword <$> matchMap keywordNames
 
 pPrimitiveType :: Parser TokenKind
 pPrimitiveType = PrimitiveType
-              <$> msum ((\pt -> matchString (show pt) >> return pt)
-              <$> (enumFrom (toEnum 0 :: PrimitiveType)))
+                 <$> msum ((\pt -> matchString (show pt) >> return pt)
+                 <$> (enumFrom (toEnum 0 :: PrimitiveType)))
+          
 
 pIntrinsic :: Parser TokenKind
 pIntrinsic =  matchMap (intName <$> intrinsicInfos) >>= \int -> return $ Intrinsic (int, intrinsicInfos M.! int)
 
 pLiteral :: Parser TokenKind
-pLiteral = Literal <$> ((Integer <$> pInt) <|> (String <$> pString))
+pLiteral = Literal <$> ((Integer <$> pInt) <|> (Str <$> pString))
 
 pSymbol :: Parser TokenKind
 pSymbol = Symbol <$> matchSome firstChars <> matchMany (not . (flip S.member illegalChars))
