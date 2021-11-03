@@ -178,8 +178,8 @@ intrinsicInfos = M.fromList $
   ]
 
 data Keyword
-  = Var
-  | Val
+  = Let
+  | LetMut
   | Proc
   | Func
   | Macro
@@ -198,8 +198,8 @@ data Keyword
 
 keywordNames :: M.Map Keyword String
 keywordNames = M.fromList $
-  [ (Val,        "val")
-  , (Var,        "var")
+  [ (Let,        "let")
+  , (LetMut,     "let*")
   , (LeftParen,  "(")
   , (RightParen, ")")
   , (LeftCurly,  "{")

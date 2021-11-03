@@ -142,7 +142,7 @@ lexReturn = exKeyword Ret >> return Return
 
 lexDecl :: Lexer ProcExpr
 lexDecl = do
-  name <- exKeyword Val   *> exSymbol
+  name <- exKeyword Let   *> exSymbol
   typ  <- exKeyword Colon *> exType
   case typ of
     Primitive _ -> do
