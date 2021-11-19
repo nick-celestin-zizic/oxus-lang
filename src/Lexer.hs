@@ -118,6 +118,8 @@ data ProcExpr
   | Identifier     Identifier
   | Name           Symbol
   | IfExpr         ProcExpr   ProcExpr
+  | Lbl            Symbol
+  | Jmp            Symbol
   | Return
   deriving (Show, Eq, Ord)
 
@@ -125,8 +127,10 @@ lexProgram :: Lexer Program
 lexProgram = Program <$> (some lexProcExpr)
 
 lexProcExpr :: Lexer ProcExpr
-lexProcExpr
-   =  lexImmediateValue
+lexProcExpr =
+  lexImmediateValue
+  <|> lexLabel
+  <|> lexJump
   <|> lexReturn    
   <|> lexDecl
   <|> lexCall
@@ -136,6 +140,9 @@ lexProcExpr
   <|> lexName
   <|> F.fail "could not lex"
 
+
+lexLabel = Lbl <$> (exKeyword Label *> exSymbol)
+lexJump = Jmp <$> (exKeyword Jump *> exSymbol)
 
 lexReturn :: Lexer ProcExpr
 lexReturn = exKeyword Ret >> return Return
@@ -151,8 +158,10 @@ lexDecl = do
       return $ Declaration (name, typ) val
     Compound p@(Procedure args ret) -> do
       ScanState a b (LexState procs) <- get
+      
       put $ ScanState a b
         (LexState (M.insert name (DefinedCall name (length args)) procs) )
+      
       expr <- (exKeyword Equals *> lexProcExpr) <|> lexBlock
       return $ Declaration (name, typ) expr
 

@@ -224,7 +224,8 @@ data Literal
 data PrimitiveType
   = Unit
   | I64
-  | String
+  | U64
+  | Mem
   deriving (Show, Eq, Ord, Enum)
 
 type Symbol = String

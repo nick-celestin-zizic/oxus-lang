@@ -1,4 +1,4 @@
-{-# LANGUAGE NamedFieldPuns, MultiParamTypeClasses, FlexibleInstances, DeriveFunctor, FlexibleContexts #-}
+{-# LANGUAGE NamedFieldPuns, MultiParamTypeClasses, FlexibleInstances, DeriveFunctor, FlexibleContexts, LambdaCase #-}
 module Compiler where
 import Control.Monad.State.Strict
 --import Control.Monad.Trans.State.Strict
@@ -207,6 +207,10 @@ emitExpr (Declaration ident@(sym, typ) expr) = do
 
     --put $ ScanState [] [] $
       --CompileState src dataS sCount sb (ScopeInfo offset so (M.insert sym expr st) sd cc)
+emitExpr (Lbl name) = do
+  emitf ".label_%s:\n" name
+emitExpr (Jmp name) = do
+  emitf "          jmp       .label_%s\n" name
 emitExpr (Name sym) = do
   offset <- ((M.lookup sym) . symOffsets . scopeInfo . scanState) <$> get
   case offset of
@@ -269,6 +273,12 @@ emitExpr (Call (IntrinsicCall Minus 2) (op1:op2:[])) = do
       emit "          sub       rax, rdx\n"
 emitExpr (Call (IntrinsicCall Minus _) _) =
   error "Plus: this should have been typechecked"
+emitExpr (Call (IntrinsicCall Inc 1) ((Name op1):[])) =
+  ((M.lookup op1) . symOffsets . scopeInfo . scanState) <$> get >>= \case
+    Just offset -> emitf "          inc       QWORD %d[rbp]\n" offset
+    Nothing     -> error $ printf "symbol %s does not exist" op1
+emitExpr (Call (IntrinsicCall Inc _) _) =
+  error "Inc: this should have been typechecked"
 emitExpr (Call (IntrinsicCall Syscall 2) (op1:op2:[])) = do
       emit " ;; Syscall 2\n"
       emitExpr op2
