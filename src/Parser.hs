@@ -272,6 +272,6 @@ pLiteral = Literal <$> ((Integer <$> pInt) <|> (Str <$> pString))
 pSymbol :: Parser TokenKind
 pSymbol = Symbol <$> matchSome firstChars <> matchMany (not . (flip S.member illegalChars))
   where firstChars c = ((not . isUpper) c || (not . isDigit) c) && (not . S.member c) illegalChars
-        illegalChars = S.fromList [ ':', ' ', '.', '\n', '=', ';']
+        illegalChars = S.fromList [ ':', ' ', '\n', '=', ';']
 
 

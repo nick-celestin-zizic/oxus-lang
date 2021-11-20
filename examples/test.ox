@@ -93,6 +93,6 @@ let start: proc {
   ++ count
   if < count 3 jump loop
       
-  ;initial_test
-  ;print_n_and_exit 3 5
+  initial_test
+  print_n_and_exit 3 5
 }
