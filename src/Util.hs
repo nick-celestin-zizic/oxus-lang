@@ -19,3 +19,7 @@ instance PrintfArg Location where
 
 dump :: (Show s) => s -> a
 dump = error . show
+
+
+genEnum :: (Enum a) => [a]
+genEnum = enumFrom (toEnum 0)
