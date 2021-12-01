@@ -4,7 +4,6 @@ module Parser where
 import Control.Applicative
 import Control.Monad.State.Strict
 import Data.Char
-import Data.Functor.Compose
 import Text.Printf
 
 import qualified Control.Monad.Fail as F
@@ -17,15 +16,22 @@ import Util
 type Parser = Scanner Char ParseState
 type ParseResult = ScanResult Char ParseState
 
+type Program = M.Map Symbol GlobalDecl
+
 data ParseState = ParseState { loc     :: Location
-                             , globals :: M.Map Symbol GlobalDecl
+                             , globals :: Program
                              } deriving (Show, Eq)
 
-  
+failFmt :: ParseState -> String -> String
+failFmt s msg = printf "%s [PARSER] %s" (loc s) msg
+
 instance F.MonadFail Parser where
   fail msg = Scanner $ \s@ScanState{scanState} ->
-    ScanResult $ Left (s, printf "%s [PARSER] %s" (loc scanState) msg)
-    
+    ScanResult $ Left (s, failFmt scanState msg)
+
+kill :: String -> Parser a
+kill msg = Scanner $ \ScanState{scanState} -> error $ failFmt scanState msg
+
 parseString :: Parser a -> String -> String -> ParseResult a
 parseString parser name input = runScanner parser
                               $ ScanState "" input (ParseState (Location name 1 1) M.empty)
@@ -116,24 +122,6 @@ pEof = do
 pEnum :: (Enum a, Show a) => Parser a
 pEnum = msum $ matchEnumValue <$> genEnum
 
-pInt :: Parser Int
-pInt = read <$> (matchString "-" <|> matchSome isDigit) <> (matchMany isDigit)
-
-pBool :: Parser Bool
-pBool = (matchString "true" >> return True) <|> (matchString "false" >> return False)
-
-pUInt :: Parser UInt
-pUInt = read <$> matchSome isDigit
-
-pString :: Parser String
-pString = matchChar '"' *> stringLiteral <* matchChar '"'
-  where
-    stringLiteral = (many noEscape <>
-                     (matchString "\\" <> (return <$> (matchAny))) <>
-                     stringLiteral)
-                    <|> (many noEscape)
-    noEscape = match (\c -> (c /= '"') && (c /= '\\'))
-
 -- The Tokenizer
 
 data Intrinsic
@@ -142,7 +130,6 @@ data Intrinsic
   | Plus
   | Minus
   | Eq
-  | Syscall
   | Len
   | Greater
   | Less
@@ -169,8 +156,8 @@ data Keyword
   | KwProc
   | KwFunc
   | KwMacro
-  | KwLeftParen
-  | KwRightParen
+  | KwOpenParen
+  | KwCloseParen
   | KwColon
   | KwEquals
   | KwOpenCurly
@@ -182,14 +169,15 @@ data Keyword
   | KwArrow
   | KwReturn
   | KwStruct
+  | KwSyscall
   deriving(Show, Eq, Enum, Ord)
 
 keywordNames :: M.Map String Keyword
 keywordNames = M.fromList $
   [ ("let*",   KwLetStar)
   , ("let",    KwLet)
-  , ("(",      KwLeftParen)
-  , (")",      KwRightParen)
+  , ("(",      KwOpenParen)
+  , (")",      KwCloseParen)
   , ("{",      KwOpenCurly)
   , ("}",      KwCloseCurly)
   , (":",      KwColon)
@@ -204,12 +192,8 @@ keywordNames = M.fromList $
   , ("->",     KwArrow)
   , ("return", KwReturn)
   , ("struct", KwStruct)
+  , ("syscall", KwSyscall)
   ]
-
-data Literal
-  = Integer Int
-  | Str     String
-  deriving(Show, Eq, Ord)
 
 type Symbol = String
 
@@ -219,9 +203,6 @@ mkToken p = pComment *> p <* pComment
 
 pIntrinsic :: Parser Intrinsic
 pIntrinsic = mkToken $ matchMap (intName <$> intrinsicInfos) >>= return
-
-pLiteral :: Parser Literal
-pLiteral = mkToken ((Integer <$> pInt) <|> (Str <$> pString))
 
 -- NOTE the reverse is a hack to let longer keywords which contain other keywords to parse properly as (as far as I can tell) M.keys produces the keys of the map in lexicographic order
 pKeyword :: Keyword -> Parser Keyword
@@ -236,6 +217,22 @@ pSymbol = mkToken $ matchSome firstChars <> matchMany (not . (flip S.member ille
   where firstChars c = ((not . isUpper) c || (not . isDigit) c) && (not . S.member c) illegalChars
         illegalChars = S.fromList [ ':', ' ', '\n', '=', ';']
 
+pIntLiteral :: Parser Int
+pIntLiteral = mkToken $ read <$> (matchString "-" <|> matchSome isDigit) <> (matchMany isDigit)
+
+pBoolLiteral :: Parser Bool
+pBoolLiteral = mkToken $ (matchString "true" >> return True) <|> (matchString "false" >> return False)
+
+pStringLiteral :: Parser String
+pStringLiteral = mkToken $ matchChar '"' *> stringLiteral <* matchChar '"'
+  where
+    stringLiteral = (many noEscape <>
+                     (matchString "\\" <> (return <$> (matchAny))) <>
+                     stringLiteral)
+                    <|> (many noEscape)
+    noEscape = match (\c -> (c /= '"') && (c /= '\\'))
+
+-- The lexer
 pGlobalDecl :: Parser GlobalDecl
 pGlobalDecl = do
   mutability <- (pKeyword KwLetStar >> return Variable) <|> (pKeyword KwLet >> return Constant)
@@ -247,13 +244,9 @@ pGlobalDecl = do
   typedExpr <- pTypedGlobalExpr maybeType
 
   let decl = GlobalDecl mutability name typedExpr
-  recordDecl decl
-  return decl
-
-recordDecl :: GlobalDecl -> Parser ()
-recordDecl decl@(GlobalDecl _ name _) = do
   ScanState lhs rhs (ParseState loc globals) <- get
   put $ ScanState lhs rhs (ParseState loc (M.insert name decl globals))
+  return decl
 
 pType :: Parser Type
 pType = pPrimitiveType <|> pStructType <|> pProcType <|> pDefinedType
@@ -279,30 +272,31 @@ pDefinedType = do
   globals <- (globals . scanState) <$> get
   case M.lookup name globals of
     Just (GlobalDecl _ _ (TypeLiteral tl)) -> return tl
+    Just t -> F.fail $ printf "`%s` is not a defined type" (show t)
     Nothing -> F.fail $ printf "`%s` is not a type" name
 
 --recordGlobal = undefined
 
 pTypedGlobalExpr :: Maybe Type -> Parser TypedGlobalExpr
-pTypedGlobalExpr (Just (PrimType Int))  = IntegerLiteral <$> pInt
-pTypedGlobalExpr (Just (PrimType Bool)) = BooleanLiteral <$> pBool
+pTypedGlobalExpr (Just (PrimType Int))  = IntegerLiteral <$> pIntLiteral
+pTypedGlobalExpr (Just (PrimType Bool)) = BooleanLiteral <$> pBoolLiteral
 pTypedGlobalExpr (Just (PrimType Type)) = TypeLiteral    <$> pType
-pTypedGlobalExpr (Just (StructType [("data",PrimType Mem),("count",PrimType Int)])) = StringLiteral <$> pString
-pTypedGlobalExpr (Just (ProcType ptExpected)) = ProcedureBody <$> pProcedureBody (Just ptExpected)
+pTypedGlobalExpr (Just (StructType [("data",PrimType Mem),("count",PrimType Int)])) = StringLiteral <$> pStringLiteral
+pTypedGlobalExpr (Just (ProcType ptExpected)) = ProcLambda <$> pProcLambda (Just ptExpected)
 pTypedGlobalExpr (Just t) = F.fail $ printf
   "globals of type `%s` are not supported" (show t)
 pTypedGlobalExpr Nothing = F.fail "type inference is not implemented yet"
 
-todo :: (MonadFail m, PrintfArg t) => t -> m a
+todo :: (MonadFail m) => String -> m a
 todo msg = F.fail $ printf "`%s` is not yet implemented" msg
 
 type ProcParser = StateT ProcInfo Parser
 
-pProcedureBody :: Maybe ProcType -> Parser ProcedureBody
-pProcedureBody mType = runStateT
-  ((pProcHeader <|> pGetHeaderInfoFromType) >>= pProcExpr) (ProcInfo mType M.empty 0 (-8))
+pProcLambda :: Maybe ProcType -> Parser ProcLambda
+pProcLambda mType = runStateT
+  ((pProcHeader <|> pGenHeaderInfoFromType) >> pProcExpr) (ProcInfo mType M.empty 0 (-8))
   where
-    pProcHeader :: ProcParser ProcType
+    pProcHeader :: ProcParser ()
     pProcHeader = do
       lift $ pKeyword KwProc
       
@@ -316,12 +310,19 @@ pProcedureBody mType = runStateT
           stackSize (currentStackOffset + 8)
       
       retType <- lift $ (pKeyword KwArrow *> pType) <|> (return (PrimType Unit))
-      return (argTypes, retType)
+
+      let procTypeFromHeader = (argTypes, retType)
       
-    pGetHeaderInfoFromType :: ProcParser ProcType
-    pGetHeaderInfoFromType = (procType <$> get) >>= \case
-        Nothing -> F.fail "type inference is not that good yet, sry"
-        Just procType@(argTypes, _) -> do
+      ProcInfo mType locals stackSize stackOffset <- get
+      case mType of
+        Nothing -> put $ ProcInfo (Just procTypeFromHeader) locals stackSize stackOffset
+        Just typ -> if procTypeFromHeader == typ then return () else F.fail $ printf
+          "Expected procedure of type `%s`, but got `%s`" (show typ) (show procTypeFromHeader)
+      
+    pGenHeaderInfoFromType :: ProcParser ()
+    pGenHeaderInfoFromType = (procType <$> get) >>= \case
+        Nothing -> F.fail "cannot infer type of procedure"
+        Just (argTypes, _) -> do
           let args = zipWith (,) ((\i -> "arg"++(show i)) <$> [1..]) argTypes
 
           forM_ (reverse args) $ \(name, typ) -> do
@@ -329,32 +330,58 @@ pProcedureBody mType = runStateT
             put $ ProcInfo mTyp
               (M.insert name (LocalVarInfo typ Constant (currentStackOffset + 24)) locals)
               stackSize (currentStackOffset + 8)
-
-          return procType
     
-    pProcExpr :: ProcType -> ProcParser ProcExpr
-    pProcExpr typeFromHeader = pProcLocalDecl <|> pProcGroup <|> pProcBlock <|> pProcImmediateValue <|> pProcPrefixCall <|> pProcInfixCall <|> pProcIf <|> pProcIfStar <|> pProcLabel <|> pProcJump <|> pProcReturn <|> pSyscall
+    pProcExpr :: ProcParser ProcExpr
+    pProcExpr =
+      pProcLocalDecl      <|> pProcIntrinsicCall <|> pProcGroup     <|> pProcBlock  <|>
+      pProcImmediateValue <|> pProcPrefixCall    <|> pProcInfixCall <|> pProcIf     <|>
+      pProcIfStar         <|> pProcLabel         <|> pProcJump      <|> pProcReturn <|>
+      pProcSyscall
       where
-        pProcLocalDecl      = todo "pProcLocalDecl"
-        pProcGroup          = todo "pProcGroup"
-        pProcBlock          = todo "pProcBlock"
-        pProcImmediateValue = todo "pProcImmediateValue"
+        pProcLocalDecl =
+          todo "pProcLocalDecl"
+
+        pProcGlobalRef = undefined
+        pProcLocalRef  = undefined
+        
+        pProcGroup = ProcGroup <$>
+          ((lift $ pKeyword KwOpenParen) *> pProcExpr <* (lift $ pKeyword KwCloseParen))
+        pProcBlock = ProcBlock <$>
+          ((lift $ pKeyword KwOpenCurly) *> many pProcExpr <* (lift $ pKeyword KwCloseCurly))
+          
+        pProcImmediateValue  = ProcImmediateValue  <$>
+          (pProcImmediateInt <|> pProcImmediateBool <|> pProcImmediateString <|> pProcImmediateType)
+        pProcImmediateInt    = ProcImmediateInt    <$>
+          (lift pIntLiteral)
+        pProcImmediateString = ProcImmediateString <$>
+          (lift pStringLiteral)
+        pProcImmediateBool   = ProcImmediateBool   <$>
+          (lift pBoolLiteral)
+        pProcImmediateType   = ProcImmediateType   <$>
+          (lift pType)
+          
         pProcPrefixCall     = todo "pProcPrefixCall"
         pProcInfixCall      = todo "pProcInfixCall"
-        pProcIf             = todo "pProcIf"
-        pProcIfStar         = todo "pProcIfStar"
-        pProcLabel          = todo "pProcLabel"
-        pProcJump           = todo "pProcJump"
-        pProcReturn         = todo "pProcReturn"
-        pSyscall            = todo "pSyscall"
-
-type Program = [GlobalDecl]
+        pProcIntrinsicCall  = todo "pProcLocalDecl"
+        pProcSyscall = do
+          lift $ pKeyword KwSyscall
+          ProcImmediateInt nargs <- pProcImmediateInt <|> (lift . kill)
+            "expected integer literal after keyword `syscall`"
+          args <- replicateM nargs pProcExpr
+          return $ ProcSyscall nargs args
+        
+        pProcIf     = todo "pProcIf"
+        pProcIfStar = todo "pProcIfStar"
+        
+        pProcLabel  = todo "pProcLabel"
+        pProcJump   = todo "pProcJump"
+        pProcReturn = todo "pProcReturn"
 
 genProgram :: FilePath -> IO (Result Program)
 genProgram path = parseFile pProgram path >>= (return . getScanResult)
 
 pProgram :: Parser Program
-pProgram = complete pGlobalDecl
+pProgram = (complete pGlobalDecl) >> ((globals . scanState) <$> get)
 
 data GlobalDecl = GlobalDecl Mutability Symbol TypedGlobalExpr
   deriving (Show, Eq, Ord)
@@ -366,10 +393,11 @@ data TypedGlobalExpr
   | StringLiteral  String
   | TypeLiteral    Type
   | BooleanLiteral Bool
-  | ProcedureBody  ProcedureBody
+  | StructLiteral  StructType
+  | ProcLambda     ProcLambda
   deriving (Show, Eq, Ord)
 
-type ProcedureBody = (ProcExpr, ProcInfo)
+type ProcLambda = (ProcExpr, ProcInfo)
 
 data Type
   = PrimType   PrimType
@@ -389,21 +417,39 @@ type StructType = [(String, Type)]
 
 type ProcType = ([Type], Type)
 
-data CompExpr = CompIntegerLiteral Int
-  deriving (Show, Eq, Ord)
-
 data ProcExpr
-  = ProcLocalDecl Symbol Type ProcExpr
+  = ProcLocalDecl
   | ProcGroup ProcExpr
   | ProcBlock [ProcExpr]
-  | ProcImmediateValue ImmediateValue
+  
+  | ProcLocalVar ProcLocalVar
+  | ProcGlobal   GlobalDecl
+  | ProcImmediateValue ProcImmediateValue
+  
   | ProcPrefixCall Caller [ProcExpr]
   | ProcInfixCall  Caller ProcExpr [ProcExpr]
+  | ProcIntrinsicCall Intrinsic [ProcExpr]
+  | ProcSyscall Int [ProcExpr]
+  
   | ProcIf ProcExpr ProcExpr
   | ProcIfStar ProcExpr ProcExpr ProcExpr
   | ProcLabel String
   | ProcJump String
   | ProcReturn (Maybe ProcExpr)
+  deriving (Show, Eq, Ord)
+
+type Offset = Int
+
+data ProcImmediateValue
+  = ProcImmediateString String
+  | ProcImmediateBool   Bool
+  | ProcImmediateType   Type
+  | ProcImmediateInt    Int
+  deriving (Show, Eq, Ord)
+
+data ProcLocalVar
+  = ProcLocalVarMut   Type Offset
+  | ProcLocalVarConst Type ProcImmediateValue
   deriving (Show, Eq, Ord)
 
 data ImmediateValue
@@ -424,6 +470,7 @@ data LocalVarInfo = LocalVarInfo { localVarType   :: Type
                                  , localVarOffset :: Int
                                  } deriving (Show, Eq, Ord)
 
+-- TODO: change this to be like type Caller = (Symbol, ProcType)
 data Caller = Caller { callerName :: String
                      , callerArgs :: Type
                      , callerRet  :: Type

@@ -13,7 +13,109 @@ import Parser
 import Lexer
 import Util
 
+type Compiler = StateT CompileState (Either String)
+type SourceCode = String
 
+data CompileState = CompileState { textSection             :: SourceCode
+                                 , textSectionForwardDecls :: SourceCode
+                                 , bssSection              :: SourceCode
+                                 , dataSection             :: SourceCode
+                                 , globals                 :: Program
+                                 } deriving (Show, Eq, Ord)
+
+initialCompileState :: Program -> CompileState
+initialCompileState program = CompileState
+  -- code section
+  "          section   .text\n"
+  -- forward declarations
+  ""
+  -- uninitialized data
+  "          section   .bss\n"
+  -- initialized data
+  "          section   .data\n"
+  -- a map of all the global variables
+  program
+
+compileProgram :: Program -> Result SourceCode
+compileProgram prog = do
+  CompileState textSection textSectionForwardDecls bssSection dataSection prog <-
+    snd <$> (runStateT (emitProgram prog) (initialCompileState prog))
+  return $ dataSection ++ bssSection ++ textSectionForwardDecls ++ textSection
+
+emitProgram :: Program -> Compiler ()
+emitProgram program = forM_ program emitGlobalDecl
+
+emitToText :: SourceCode -> Compiler ()
+emitToText src = do
+  CompileState ts tsfd bs ds prog <- get
+  put $ CompileState (ts ++ src) tsfd bs ds prog
+
+emitToTextForwardDecls :: SourceCode -> Compiler ()
+emitToTextForwardDecls src = do
+  CompileState ts tsfd bs ds prog <- get
+  put $ CompileState ts (tsfd ++ src) bs ds prog
+
+emitToBss :: SourceCode -> Compiler ()
+emitToBss src = do
+  CompileState ts tsfd bs ds prog <- get
+  put $ CompileState ts tsfd (bs ++ src) ds prog
+
+emitToData :: SourceCode -> Compiler ()
+emitToData src = do
+  CompileState ts tsfd bs ds prog <- get
+  put $ CompileState ts tsfd bs (ds ++ src) prog
+
+emitGlobalDecl :: GlobalDecl -> Compiler ()
+emitGlobalDecl (GlobalDecl Constant "start" (ProcLambda lambda@(_, info))) = do
+  emitToTextForwardDecls "          global    _start\n"
+  emitToText "_start:\n"
+  emitToText "          push      rbp\n"
+  emitToText "          mov       rbp, rsp\n"
+
+  emitToText $ printf "          sub       rsp, %d\n" (procStackSize info)
+  emitProcLambda lambda
+emitGlobalDecl (GlobalDecl mut "start" expr) =
+  error "this is going to be typechecked at some point: %s start %s"
+    (show mut) (show expr)
+emitGlobalDecl (GlobalDecl Constant name (ProcLambda expr)) =
+  error $ printf "proc lambda `%s`" name
+emitGlobalDecl (GlobalDecl Variable name (ProcLambda expr)) =
+  error $ printf "cannot declare function pointer `%s`, yet" name
+emitGlobalDecl (GlobalDecl Constant name expr) =
+  return ()
+emitGlobalDecl (GlobalDecl Variable name (IntegerLiteral n)) = do
+  emitToData $ printf "%s\n          dq        %d\n" name n
+
+
+type ProcCompiler = StateT ProcInfo Compiler
+emitProcLambda :: ProcLambda -> Compiler ()
+emitProcLambda (expr, info) = evalStateT (emitProcExpr expr) info
+  where
+    emitProcExpr :: ProcExpr -> ProcCompiler ()
+    emitProcExpr ProcLocalDecl = return ()
+    emitProcExpr (ProcIntrinsicCall int args) = error $ printf
+      "compiling intrinsic `%s` with arguments `%s`" (show int) (show args)
+    emitProcExpr (ProcGroup expr)  = emitProcExpr expr
+    emitProcExpr (ProcBlock exprs) = forM_ exprs emitProcExpr
+    emitProcExpr (ProcLocalVar lv) = error $ printf "local `%s`" (show lv)
+    emitProcExpr (ProcGlobal decl) = error $ printf "global `%s`" (show decl)
+    emitProcExpr (ProcImmediateValue (ProcImmediateInt n)) =
+      lift $ emitToText $ printf "          mov       rax, %d\n" n
+    emitProcExpr (ProcPrefixCall _ _) = error "prefix call"
+    emitProcExpr (ProcInfixCall _ _ _) = error "infix call"
+    emitProcExpr (ProcIf _ _) = error "if statement"
+    emitProcExpr (ProcIfStar _ _ _) = error "if* statement"
+    emitProcExpr (ProcLabel l) = error $ printf "label `%s`" l
+    emitProcExpr (ProcJump l) = error $ printf "jump to `%s`" l
+    emitProcExpr (ProcReturn _) = error "return"
+    emitProcExpr (ProcSyscall 2 (op1:op2:[])) = do
+      lift $ emitToText " ;; Syscall 2\n"
+      emitProcExpr op2
+      lift $ emitToText "          mov       rdi, rax\n"
+      emitProcExpr op1
+      lift $ emitToText "          syscall\n"
+    
+{--
 type SourceCode = T.Text
 
 data CompileState = CompileState
@@ -98,18 +200,18 @@ runCompiler c = src <$>
   getScanState (runScanner c (ScanState [] [] $
                                CompileState T.empty T.empty 0 0 M.empty defaultScopeInfo))
   
-compileProgram :: Program -> Result SourceCode
+compileProgram :: Lexer.Program -> Result SourceCode
 compileProgram (Program expr) = runCompiler $ do
   emitDataS " ;; Strings\n"
   emitDataS "          section   .data\n"
   emit " ;; Startup\n"
   emit "          global    _start\n"
-  emit "          section   .text\n"
+  emit   "          section   .text\n"
   --emit "          push      rbp\n"
   --emit "          mov       rbp, rsp\n"
   emit " ;; Program Start\n"
   --error (show expr)
-  emitExpr (Block expr)
+  emitExpr (Lexer.Block expr)
   dataS <- (dataSection . scanState) <$> get
   -- NOTE this is awful and really slow but i just want to get the language to the point where I can self host
   emit (T.unpack dataS)
@@ -126,7 +228,7 @@ generateProcBody expr = do
     return (T.drop oldLen newSrc, (-(offset + 8)))
 
 emitExpr :: ProcExpr -> Compiler ()
-emitExpr (Block exprs) = do
+emitExpr (Lexer.Block exprs) = do
   CompileState src dataS sCount sb g oldScope@(ScopeInfo ro so st sd cc) <- scanState <$> get
   put $ ScanState [] [] $ CompileState src dataS sCount sb g (ScopeInfo ro so st (sd+1) cc)
   
@@ -141,7 +243,7 @@ emitExpr (ImmediateValue (Str s)) = do
   emitDataSf " db        `%s`\n" s
   emitf      "          lea       rax, [rel str_%04d]\n" scount
   incStringsCount
-emitExpr (Declaration ("start", (Compound (Procedure [] (Primitive Unit)))) expr) = do
+emitExpr (Declaration ("start", (Compound (Lexer.Procedure [] (Prim Unit)))) expr) = do
   emit "_start:\n"
   emit "          push      rbp\n"
   emit "          mov       rbp, rsp\n"
@@ -155,7 +257,7 @@ emitExpr (Declaration ("start", (Compound (Procedure [] (Primitive Unit)))) expr
   emit "          mov       rax, 60\n"
   emit "          mov       rdi, 0\n"
   emit "          syscall\n"
-emitExpr (Declaration (name, typ@(Compound (Procedure args ret))) body) = do
+emitExpr (Declaration (name, typ@(Compound (Lexer.Procedure args ret))) body) = do
   CompileState src ds sc sbfp gs oldInfo@(ScopeInfo ro so d sd cc) <- scanState <$> get
 
   --_ <- if name == "print_n_and_exit" then error (show args) else return ()
@@ -182,7 +284,7 @@ emitExpr (Declaration (name, typ@(Compound (Procedure args ret))) body) = do
   emit  "          ret\n"
   CompileState src ds sc sbfp gs _ <- scanState <$> get
   put $ ScanState [] [] $ CompileState src ds sc sbfp gs oldInfo
-emitExpr Return = do
+emitExpr Lexer.Return = do
   stackBytes <- ((\offset -> (-(offset + 8))) . rbpOffset . scopeInfo . scanState) <$> get
   emit  " ;; Procedure return\n"
   emitf "          add       rsp, %d\n" stackBytes
@@ -219,13 +321,13 @@ emitExpr (Name sym) = do
       case look of
         Nothing -> error $ printf "Symbol `%s` is not defined" sym
         Just (typ, expr) -> case typ of
-          Primitive t -> emitExpr expr
+          Prim t -> emitExpr expr
           _ -> error (show expr)
     Just offset -> emitf "          mov       rax, QWORD %d[rbp]\n" offset
 emitExpr (Call (DefinedCall name nargs) args) = do
   emitf " ;; Call to procedure %s\n" name
   look <- ((M.lookup name) . globals . scanState) <$> get
-  let info@((Compound (Procedure _ _)), _) = case look of
+  let info@((Compound (Lexer.Procedure _ _)), _) = case look of
         Just info -> info
         Nothing -> error "This should be unreachable, right?"
   forM_ args $ \arg -> emitExpr arg >> emit "          push      rax\n"
@@ -298,3 +400,4 @@ emitExpr (Call (IntrinsicCall Syscall 4) (op1:op2:op3:op4:[])) = do
 emitExpr (Call (IntrinsicCall Syscall n) _) =
   error $ printf  "Syscall %d: this should have been typechecked" n
 emitExpr expr = error $ show expr
+--}

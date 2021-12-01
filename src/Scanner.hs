@@ -12,7 +12,7 @@ data ScanState i s = ScanState { lhs :: [i]
                                , scanState :: s
                                } deriving (Show, Eq)
 
-newtype ScanResult i s a = ScanResult { _getScanResult :: Either (ScanState i s, String) (ScanState i s, a)
+newtype ScanResult i s a = ScanResult { getScanResult_ :: Either (ScanState i s, String) (ScanState i s, a)
                                       } deriving Functor
 getScanResult :: ScanResult i s a -> Result a
 getScanResult (ScanResult (Left (_, msg))) = Left msg

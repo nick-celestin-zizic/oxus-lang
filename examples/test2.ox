@@ -12,7 +12,7 @@ let TwoStrings: Type = struct {
   s2: String
 }
 
-let* *global-counter*: Int = 0
+;let* *global-counter*: Int = 0
 
 let boolin: Bool = true
 
@@ -24,10 +24,10 @@ let Cool: Type = Index
 
 let Nice: Type = Cool
 
-let exit: proc Int -> Unit = proc code: Int {
-  syscall 2 *sys-exit* code
+let start: proc = {
+  syscall 2 60 69
 }
 
-let start: proc Unit -> Unit = proc {
-  syscall 2 *sys-exit* 42
-}
+;;--
+  ;this should be a block comment
+;;-
