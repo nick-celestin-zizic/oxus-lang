@@ -1,20 +1,20 @@
-let *sys-write* : I64 = 1
-let *sys-exit*  : I64 = 60
-let *std-out*   : I64 = 1
+let *sys-write* : Int = 1
+let *sys-exit*  : Int = 60
+let *std-out*   : Int = 1
 
-let exit: proc code: I64 = syscall 2 *sys-exit* code
+let write: proc String -> Unit =
+  syscall 4 *sys-write* *std-out* arg1.data arg1.count
+let exit: proc Int -> Unit =
+  syscall 2 *sys-exit* arg1
 
-let write: proc data: Mem count: U64 =
-  syscall 4 *sys-write* *std-out* data count
+let print_n_times: proc n: Int {
+ ;if < n 1 return
 
-let print_n_times: proc n: I64 {
- if < n 1 return
-
- write "nice\n" 5
+ ;write "nice\n" 5
  print_n_times - n 1
 }
 
-let print_n_and_exit: proc n: I64 code: I64 {
+let print_n_and_exit: proc n: Int code: Int {
   print_n_times n
   exit code
 }
@@ -31,7 +31,7 @@ let print_n_and_exit: proc n: I64 code: I64 {
 ;   none
 ; }
 
-; let tuple: { I64, Mem } = 12 mem guy
+; let tuple: { Int, Mem } = 12 mem guy
 
 ;  let value = match ptr with
 
@@ -53,7 +53,7 @@ let print_n_and_exit: proc n: I64 code: I64 {
 ;   error: l
 ; }
 
-; let nice: Maybe I64 = some 3
+; let nice: Maybe Int = some 3
 
 ; match ptr with
 ;  none -> expr
@@ -67,8 +67,8 @@ let print_n_and_exit: proc n: I64 code: I64 {
 
 let test: proc {
   ;let msg:  Str = "Hello, Procedure!\n"
-  let less: I64    = 12
-  let more: I64    = 100
+  let less: Int    = 12
+  let more: Int    = 100
   
   if > more less {
     write "Hello, Procedure!\n" 18
@@ -77,8 +77,8 @@ let test: proc {
 }
 
 let initial_test: proc {
-  let exit-code:   I64 = 10
-  let another-one: I64 = 12
+  let exit-code:   Int = 10
+  let another-one: Int = 12
   
   test
   if > 999 another-one {
@@ -87,7 +87,7 @@ let initial_test: proc {
 }
 
 let start: proc {
-  let count: I64 = 0
+  let count: Int = 0
   label loop
   write "cool\n" 5
   ++ count

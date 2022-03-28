@@ -1,20 +1,16 @@
-{-# LANGUAGE NamedFieldPuns, TypeSynonymInstances, FlexibleInstances, LambdaCase#-}
 module Main where
-import Control.Monad
 import System.FilePath
 import System.Process
 import System.Exit
 import Text.Printf
-import qualified Data.Text as T
 
 import Parser
-import Lexer
 import Compiler
 
 main :: IO ()
 main = do
-  let srcPath   = "../examples/test2.ox"
-  let outputDir = "../bin/"
+  let srcPath   = "./examples/bitwise.ox"
+  let outputDir = "./bin/"
   
   let exePath = outputDir ++ (takeBaseName srcPath)
   let objPath = exePath   ++ ".o"
@@ -22,23 +18,23 @@ main = do
 
   let compileCmd = printf "nasm -felf64 %s && ld %s -o %s"
                    asmPath objPath exePath
-
   
-  program <- genProgram srcPath >>= \case
+  program <- (genProgram srcPath) >>= \case
     Left msg   -> die msg
     Right prog -> return prog
-
-  --print "---PROGRAM---"
-  --forM_ program print
+  
+  {--
+  forM_ program print
+  undefined
+  --}
   
   src <- return (compileProgram program) >>= \case
     Left msg  -> die msg
     Right src -> return src
 
   {--
-  print "----SOURCE BEGIN---"
   putStr src
-  error "----SOURCE END---"
+  undefined
   --}
   
   writeFile asmPath src

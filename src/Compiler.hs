@@ -1,16 +1,11 @@
-{-# LANGUAGE NamedFieldPuns, MultiParamTypeClasses, FlexibleInstances, DeriveFunctor, FlexibleContexts, LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns, TypeSynonymInstances, MultiParamTypeClasses, FlexibleInstances, DeriveFunctor, FlexibleContexts, LambdaCase #-}
 module Compiler where
-import Control.Monad.State.Strict
---import Control.Monad.Trans.State.Strict
-import Control.Monad.State.Class
-import Numeric.Natural
-import Text.Printf
-import qualified Data.Text as T
-import qualified Data.Map  as M
 
-import Scanner
+import Control.Monad.State.Strict
+import Text.Printf
+import qualified Data.Map as M
+
 import Parser
-import Lexer
 import Util
 
 type Compiler = StateT CompileState (Either String)
@@ -20,7 +15,7 @@ data CompileState = CompileState { textSection             :: SourceCode
                                  , textSectionForwardDecls :: SourceCode
                                  , bssSection              :: SourceCode
                                  , dataSection             :: SourceCode
-                                 , globals                 :: Program
+                                 , progState               :: Program
                                  } deriving (Show, Eq, Ord)
 
 initialCompileState :: Program -> CompileState
@@ -42,9 +37,6 @@ compileProgram prog = do
     snd <$> (runStateT (emitProgram prog) (initialCompileState prog))
   return $ dataSection ++ bssSection ++ textSectionForwardDecls ++ textSection
 
-emitProgram :: Program -> Compiler ()
-emitProgram program = forM_ program emitGlobalDecl
-
 emitToText :: SourceCode -> Compiler ()
 emitToText src = do
   CompileState ts tsfd bs ds prog <- get
@@ -65,61 +57,244 @@ emitToData src = do
   CompileState ts tsfd bs ds prog <- get
   put $ CompileState ts tsfd bs (ds ++ src) prog
 
-emitGlobalDecl :: GlobalDecl -> Compiler ()
-emitGlobalDecl (GlobalDecl Constant "start" (ProcLambda lambda@(_, info))) = do
-  emitToTextForwardDecls "          global    _start\n"
-  emitToText "_start:\n"
-  emitToText "          push      rbp\n"
-  emitToText "          mov       rbp, rsp\n"
+emitProgram :: Program -> Compiler ()
+emitProgram (Program globals strings) = do
+  emitToData $ printf "          _static_strings: db `%s`\n" strings
+  forM_ globals emitGlobalDecl
+ where
+   emitGlobalDecl :: GlobalDecl -> Compiler ()
+   emitGlobalDecl (GlobalDecl Constant "start" (ProcLambda lambda@(_, info))) = do
+     emitToTextForwardDecls "          global    _start\n"
+     emitToText "_start:\n"
+     emitToText "          push      rbp\n"
+     emitToText "          mov       rbp, rsp\n"
+  
+     emitToText $ printf "          sub       rsp, %d\n" (procStackSize info)
+     emitProcLambda lambda
+     emitToText "          xor       rdi, rdi\n"
+     emitToText "          mov       rax, 60\n"
+     emitToText "          syscall\n"
+   emitGlobalDecl (GlobalDecl mut "start" expr) =
+     error "this is going to be typechecked at some point: %s start %s" (show mut) (show expr)
+   emitGlobalDecl (GlobalDecl Constant name (ProcLambda lambda@(_, info))) = do
+     emitToTextForwardDecls $ printf "          global    %s\n" name
+     emitToText $ printf "%s:\n" name
+     emitToText "          push      rbp\n"
+     emitToText "          mov       rbp, rsp\n"
+     
+     let stackSize = procStackSize info
+     
+     if stackSize /= 0
+       then emitToText $ printf "          sub       rsp, %d\n" stackSize
+       else return ()
+       
+     emitProcLambda lambda
+     
+     emitToText  " ;; Procedure end\n"
+     if stackSize /= 0
+       then emitToText $ printf  "          add       rsp, %d\n" stackSize
+       else return ()
+       
+     emitToText  "          pop       rbp\n"
+     emitToText  "          ret\n"
+   emitGlobalDecl (GlobalDecl Variable name (ProcLambda _)) =
+     error $ printf "cannot declare function pointer `%s`, yet" name
+   emitGlobalDecl (GlobalDecl Constant _ _) = return ()
+   emitGlobalDecl (GlobalDecl Variable name (Integer n)) = do
+     emitToData $ printf "%s\n          dq        %d\n" name n
+   
+   emitProcLambda :: ProcLambda -> Compiler ()
+   emitProcLambda (rootExpr, info) = emitProcExpr rootExpr
+     where
+       getLocalOffset name = (localVarOffset . (flip (M.!) name) . procLocals) info
+         
+       emitProcExpr :: ProcExpr -> Compiler ()
+       emitProcExpr (ProcDeclareLocalWithLiteral name (StructLit fields)) =
+         forM_ fields $ \(suffix, val) -> do
+           let offset = (localVarOffset
+                           . (flip (M.!) (name++"."++suffix))
+                           . procLocals) info
+           emitProcExpr (ProcEmitValue val)
+           emitToText $ printf "          mov       %d[rbp], QWORD rax\n" offset
+           
+       emitProcExpr (ProcDeclareLocalWithLiteral name val) = do
+         emitProcExpr (ProcEmitValue val)
+         emitToText $ printf "          mov       %d[rbp], QWORD rax\n" (getLocalOffset name)
 
-  emitToText $ printf "          sub       rsp, %d\n" (procStackSize info)
-  emitProcLambda lambda
-emitGlobalDecl (GlobalDecl mut "start" expr) =
-  error "this is going to be typechecked at some point: %s start %s"
-    (show mut) (show expr)
-emitGlobalDecl (GlobalDecl Constant name (ProcLambda expr)) =
-  error $ printf "proc lambda `%s`" name
-emitGlobalDecl (GlobalDecl Variable name (ProcLambda expr)) =
-  error $ printf "cannot declare function pointer `%s`, yet" name
-emitGlobalDecl (GlobalDecl Constant name expr) =
-  return ()
-emitGlobalDecl (GlobalDecl Variable name (IntegerLiteral n)) = do
-  emitToData $ printf "%s\n          dq        %d\n" name n
+       emitProcExpr (ProcDeclareLocalWithVariable name (LocalVarInfo (StructType fields) m o)) = do
+         error "declare struct by copying another struct"
+       emitProcExpr (ProcDeclareLocalWithVariable name refInfo) = do
+         emitProcExpr (ProcEmitVar "" refInfo)
+         emitToText $ printf "          mov       %d[rbp], QWORD rax\n" (getLocalOffset name)
 
+       --emitProcExpr (ProcGroup expr) = emitProcExpr expr
+       emitProcExpr (ProcBlock exprs) =
+         forM_ exprs emitProcExpr
 
-type ProcCompiler = StateT ProcInfo Compiler
-emitProcLambda :: ProcLambda -> Compiler ()
-emitProcLambda (expr, info) = evalStateT (emitProcExpr expr) info
-  where
-    emitProcExpr :: ProcExpr -> ProcCompiler ()
-    emitProcExpr ProcLocalDecl = return ()
-    emitProcExpr (ProcIntrinsicCall int args) = error $ printf
-      "compiling intrinsic `%s` with arguments `%s`" (show int) (show args)
-    emitProcExpr (ProcGroup expr)  = emitProcExpr expr
-    emitProcExpr (ProcBlock exprs) = forM_ exprs emitProcExpr
-    emitProcExpr (ProcLocalVar lv) = error $ printf "local `%s`" (show lv)
-    emitProcExpr (ProcGlobal decl) = error $ printf "global `%s`" (show decl)
-    emitProcExpr (ProcImmediateValue (ProcImmediateInt n)) =
-      lift $ emitToText $ printf "          mov       rax, %d\n" n
-    emitProcExpr (ProcPrefixCall _ _) = error "prefix call"
-    emitProcExpr (ProcInfixCall _ _ _) = error "infix call"
-    emitProcExpr (ProcIf _ _) = error "if statement"
-    emitProcExpr (ProcIfStar _ _ _) = error "if* statement"
-    emitProcExpr (ProcLabel l) = error $ printf "label `%s`" l
-    emitProcExpr (ProcJump l) = error $ printf "jump to `%s`" l
-    emitProcExpr (ProcReturn _) = error "return"
-    emitProcExpr (ProcSyscall 2 (op1:op2:[])) = do
-      lift $ emitToText " ;; Syscall 2\n"
-      emitProcExpr op2
-      lift $ emitToText "          mov       rdi, rax\n"
-      emitProcExpr op1
-      lift $ emitToText "          syscall\n"
-    
-{--
+       emitProcExpr (ProcEmitVar name info@(LocalVarInfo (StructType _) mut offset)) =
+         error "nonono you shouldn't be using emit with structs you silly billy"
+       emitProcExpr (ProcEmitVar name info@(LocalVarInfo typ mut offset)) = do
+         emitToText $ printf "          mov       rax, QWORD %d[rbp]\n" offset
+           
+       emitProcExpr (ProcEmitValue (Integer n)) =
+         emitToText $ printf "          mov       rax, %d\n" n
+
+       emitProcExpr (ProcEmitValue (Address (StringAddr offset))) =
+         emitToText $ printf "          mov       rax, QWORD _static_strings+%d\n" offset
+       
+       emitProcExpr (ProcEmitValue (StructLit _)) = do
+         error "struct literal outside of decleration"
+   
+       emitProcExpr (ProcEmitGlobal (GlobalDecl _ _ (Integer n))) = emitToText $ printf
+         "          mov       rax, %d\n" n
+       emitProcExpr (ProcDefinedCall name args size) = do
+         forM_ args $ \case
+           -- NOTE: this way of hardcoding string literals is very dumb
+           ProcEmitValue (StructLit fields) ->
+             forM_ (reverse fields) $ \(suffix, val) -> do
+               emitProcExpr (ProcEmitValue val)
+               emitToText "          push      rax\n"
+           ProcEmitVar name (LocalVarInfo (StructType fields) mut offset) -> do
+             forM_ (reverse fields) $ \(suffix, typ) -> case typ of
+               StructType _ -> error "nested structures as procedure arguments are not yet supported"
+               PrimType _ ->
+                 -- NOTE: this is retarded
+                 let offset = (localVarOffset
+                               . (flip (M.!) (name++"."++suffix))
+                               . procLocals) info in do
+                   emitToText $ printf "          mov       rax, %d[rbp]\n" offset
+                   emitToText "          push      rax\n"
+           ProcEmitVar name info@(LocalVarInfo typ mut offset) -> do
+             emitToText $ printf "          mov       rax, %d[rbp]\n" offset
+             emitToText "          push      rax\n"
+           arg -> do
+             emitProcExpr arg >> emitToText "          push      rax\n"
+         emitToText $ printf "          call      %s\n" name
+         emitToText $ printf "          add       rsp, %d\n" size
+           
+       emitProcExpr (ProcSyscall 2 (op1:op2:[])) = do
+         emitToText " ;; Syscall 2\n"
+         emitProcExpr op2
+         emitToText "          mov       rdi, rax\n"
+         emitProcExpr op1
+         emitToText "          syscall\n"
+       emitProcExpr (ProcSyscall 4 (op1:op2:op3:op4:[])) = do
+         emitToText " ;; Syscall 4\n"
+         emitProcExpr op4
+         emitToText "          mov       rdx, rax\n"
+         emitProcExpr op3
+         emitToText "          mov       rsi, rax\n"
+         emitProcExpr op2
+         emitToText "          mov       rdi, rax\n"
+         emitProcExpr op1
+         emitToText "          syscall\n"
+       emitProcExpr (ProcIntrinsicCall Greater (op1:op2:[])) = do
+         emitToText " ;; Greater\n"
+         emitProcExpr op1
+         emitToText "          mov       rdx, rax\n"
+         emitProcExpr op2
+         emitToText "          cmp       rdx, rax\n"
+         emitToText "          setg      al      \n"
+       emitProcExpr (ProcIntrinsicCall Greater _) =
+         error "Greater: this should have been typechecked"
+       emitProcExpr (ProcIntrinsicCall Less (op1:op2:[])) = do
+         emitToText " ;; Greater\n"
+         emitProcExpr op1
+         emitToText "          mov       rdx, rax\n"
+         emitProcExpr op2
+         emitToText "          cmp       rdx, rax\n"
+         emitToText "          setl      al      \n"
+       emitProcExpr (ProcIntrinsicCall NEq (op1:op2:[])) = do
+         emitProcExpr op1
+         emitToText "          mov       rbx, rax\n"
+         emitProcExpr op2
+         emitToText "          cmp       rbx, rax\n"
+         emitToText "          setne     al      \n"
+       emitProcExpr (ProcIntrinsicCall And (op1:op2:[])) = do
+         emitProcExpr op1
+         emitToText "          mov       rbx, rax\n"
+         emitProcExpr op2
+         emitToText "          and       rax, rbx\n"
+       emitProcExpr (ProcIntrinsicCall Plus (op1:op2:[])) = do
+         emitProcExpr op1
+         emitToText "          push      rax\n"
+         emitProcExpr op2
+         emitToText "          pop       rbx\n"
+         emitToText "          add       rax, rbx\n"
+       emitProcExpr (ProcIntrinsicCall Offset (op1:op2:[])) = do
+         emitProcExpr op1
+         emitToText "          push      rax\n"
+         emitProcExpr op2
+         emitToText "          pop       rbx\n"
+         emitToText "          add       rax, rbx\n"
+       emitProcExpr (ProcIntrinsicCall Mul (op1:op2:[])) = do
+         emitProcExpr op1
+         emitToText "          mov       rbx, rax\n"
+         emitProcExpr op2
+         emitToText "          mul       rbx\n"
+       emitProcExpr (ProcIntrinsicCall Mod (op1:op2:[])) = do
+         emitProcExpr op2
+         emitToText "          mov       rbx, rax\n"
+         emitProcExpr op1
+         emitToText "          cqo\n"
+         emitToText "          idiv      rbx\n"
+         emitToText "          mov       rax, rdx\n"
+       emitProcExpr (ProcIntrinsicCall Div (op1:op2:[])) = do
+         emitProcExpr op2
+         emitToText "          mov       rbx, rax\n"
+         emitProcExpr op1
+         emitToText "           cqo\n"
+         emitToText "           idiv      rbx\n"
+       emitProcExpr (ProcIntrinsicCall RightShift (op1:op2:[])) = do
+         emitProcExpr op2
+         emitToText "          mov       rcx, rax\n"
+         emitProcExpr op1
+         emitToText "          shr       rax, cl\n"
+       emitProcExpr (ProcIntrinsicCall And _) =
+         error "And: this should have been typechecked"
+       emitProcExpr (ProcIntrinsicCall Less _) =
+         error "Greater: this should have been typechecked"
+       emitProcExpr (ProcIntrinsicCall Inc [ProcEmitVar _ (LocalVarInfo _ Variable offset)]) =
+         emitToText $ printf "          add       QWORD %d[rbp], 1\n" offset
+       emitProcExpr (ProcIntrinsicCall Inc [ProcEmitVar name (LocalVarInfo _ Constant _)]) =
+         error $ printf "cannot increment constant value `%s`" name
+       emitProcExpr (ProcIntrinsicCall Inc _) =
+         error "Inc: this should have been typechecked"
+       emitProcExpr (ProcIntrinsicCall LoadAddr [op]) = do
+         emitProcExpr op
+         emitToText "          mov       rax, [rax]\n"
+       emitProcExpr (ProcLabel name) =
+         -- TODO: have these labels include file and line numbers and whatnot
+         emitToText $ printf ".%s:\n" name
+       emitProcExpr (ProcJump name) =
+         emitToText $ printf "          jmp       .%s\n" name
+       emitProcExpr (ProcIf condition expr labelId) = do
+         emitProcExpr condition
+         emitToText          "          cmp       rax, 0\n"
+         emitToText $ printf "          je        .L%d\n" labelId
+         emitProcExpr expr
+         emitToText $ printf ".L%d:\n" labelId
+       emitProcExpr (ProcIfElse condition expr1 label1 expr2 label2) = do
+         emitProcExpr condition
+         emitToText          "          cmp       rax, 0\n"
+         emitToText $ printf "          je        .L%d\n" label1
+         emitProcExpr expr1
+         emitToText $ printf "          jmp       .L%d\n" label2
+         emitToText $ printf ".L%d:\n" label1
+         emitProcExpr expr2
+         emitToText $ printf ".L%d:\n" label2
+       emitProcExpr (ProcSetLocal offset expr) = do
+         emitToText ";;             SET\n"
+         emitProcExpr expr
+         emitToText $ printf "          mov       %d[rbp], rax\n" offset
+         emitToText ";;             SET END\n"
+       emitProcExpr expr = error (show expr)
+         
+   {--
 type SourceCode = T.Text
 
 data CompileState = CompileState
-  { src               :: SourceCode
+{ src               :: SourceCode
   , dataSection       :: SourceCode
   , stringsCount      :: Natural
   , stackBytesForProc :: Int

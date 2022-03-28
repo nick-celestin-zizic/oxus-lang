@@ -3,5 +3,6 @@
 *.pdf
 *.o
 *.out
+*.hi
 bin/*
 notes.org

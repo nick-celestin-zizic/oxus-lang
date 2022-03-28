@@ -1,4 +1,4 @@
-{-# LANGUAGE NamedFieldPuns, TypeSynonymInstances, FlexibleInstances#-}
+{-# LANGUAGE NamedFieldPuns, TypeSynonymInstances, MultiParamTypeClasses, FlexibleInstances, DeriveFunctor, FlexibleContexts, LambdaCase #-}
 module Util where
 import Text.Printf
 import Numeric.Natural
